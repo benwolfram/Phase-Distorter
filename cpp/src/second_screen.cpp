@@ -34,7 +34,7 @@ constexpr unsigned naming_keyboard = 28; // window ID of the name entry grid
 constexpr std::size_t stat_text_x = 14, stat_text_y = 16, stat_first_option = 43, stat_page = 51;
 constexpr std::size_t option_flags = 0, option_next = 2, option_page = 6, option_x = 8, option_y = 10;
 constexpr std::uint16_t button_a = 0x0080, button_b = 0x8000, button_up = 0x0800, button_down = 0x0400,
-                        button_left = 0x0200, button_right = 0x0100;
+                        button_left = 0x0200, button_right = 0x0100, button_l = 0x0020;
 
 // Window tiles: 0x10 corner, 0x11 horizontal edge, 0x12 vertical edge,
 // 0x03 solid interior, 0x20/0x30 rolling-digit tops/bottoms.
@@ -44,12 +44,15 @@ constexpr int area_x = 27, area_y = 6;  // native 256x224 window area
 constexpr int tab_y = 236, tab_w = 96, tab_h = 32;
 constexpr std::array<int, 3> tab_x{7, 107, 207};
 constexpr int card_w = 96, card_h = 96, cards_per_page = 6;
+// Game page: party cards above the tabs, and on a clear field a row with
+// the command window and Talk to (the A and L buttons) beside the money.
+constexpr int party_card_y = 174, field_row_y = party_card_y - 36, field_button_w = 72;
 constexpr std::array<const char *, 7> setting_labels{
     "Text windows", "Widescreen", "Frame rate", "Smooth motion", "CRT filter", "Reduce flashing", "Backdrop"};
 
 enum : int {
     tab_button = 100, save_button = 200, load_button = 201, delete_button = 202, page_button = 203,
-    card_button = 300, setting_button = 400
+    card_button = 300, setting_button = 400, menu_button = 500, talk_button = 501
 };
 
 std::uint32_t read_long(std::span<const std::uint8_t> image, std::size_t offset) {
@@ -255,6 +258,10 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
         taps_.pop_front();
         return 0;
     }
+    if (tap.button) {
+        tap.confirming = true;
+        return press(tap.button, 0);
+    }
     if (tap.window < 0) {
         tap.confirming = true;
         return press(button_b, 0);
@@ -435,6 +442,7 @@ void SecondScreen::select_tab(Tab tab) {
 
 void SecondScreen::touch(int x, int y, int action) {
     std::lock_guard lock(mutex_);
+    layout(); // the field row comes and goes with the game's windows
     int hit = -1;
     for (const auto &button : buttons_)
         if (x >= button.x && x < button.x + button.w && y >= button.y && y < button.y + button.h) hit = button.id;
@@ -478,6 +486,10 @@ void SecondScreen::activate(int id) {
     if (id >= tab_button && id < tab_button + 3) {
         tab_ = Tab(id - tab_button);
         taps_.clear();
+    } else if (id == menu_button || id == talk_button) {
+        Tap tap;
+        tap.button = id == menu_button ? button_a : button_l;
+        if (taps_.size() < 16) taps_.push_back(tap);
     } else if (id == save_button) {
         commands_.push_back({Command::Kind::Save, {}, {}});
     } else if (id == load_button) {
@@ -525,6 +537,10 @@ void SecondScreen::layout() {
         buttons_.push_back({242, 4, 64, 32, page_button});
         for (int slot = 0; slot < cards_per_page; ++slot)
             buttons_.push_back({7 + (slot % 3) * 101, 40 + (slot / 3) * 98, card_w, card_h, card_button + slot});
+    } else if (tab_ == Tab::Game && field_clear()) {
+        const int left = field_row_left();
+        buttons_.push_back({left, field_row_y, field_button_w, 32, menu_button});
+        buttons_.push_back({left + field_button_w + 4, field_row_y, field_button_w, 32, talk_button});
     } else if (tab_ == Tab::Settings) {
         for (int row = 0; row < int(setting_labels.size()); ++row)
             buttons_.push_back({14, 13 + row * 30, 282, 28, setting_button + row});
@@ -689,6 +705,19 @@ bool SecondScreen::render(std::span<std::uint32_t, width * height> canvas) {
     return true;
 }
 
+bool SecondScreen::field_clear() const {
+    return windows_.empty() && !in_battle_ && !party_.empty();
+}
+
+int SecondScreen::money_width() const {
+    return std::max(64, (text_width(0, "$" + std::to_string(money_)) + 31) / 8 * 8);
+}
+
+int SecondScreen::field_row_left() const {
+    const int count = int(party_.size()), cards_w = count * 72 + std::max(0, count - 1) * 4;
+    return (width - std::max(cards_w, 2 * field_button_w + 8 + money_width())) / 2;
+}
+
 void SecondScreen::draw_game(Canvas canvas) const {
     const auto overlaps = [&](int x, int y, int w, int h) {
         for (const auto &window : windows_)
@@ -699,7 +728,7 @@ void SecondScreen::draw_game(Canvas canvas) const {
     };
     // Party status in the style of the battle HP/PP boxes, under any windows.
     const int count = int(party_.size());
-    const int cards_w = count * 72 + std::max(0, count - 1) * 4, card_y = 230 - 56;
+    const int cards_w = count * 72 + std::max(0, count - 1) * 4, card_y = party_card_y;
     if (count && !overlaps((width - cards_w) / 2, card_y, cards_w, 56)) {
         for (int index = 0; index < count; ++index) {
             const auto &member = party_[index];
@@ -715,14 +744,23 @@ void SecondScreen::draw_game(Canvas canvas) const {
                 draw_digits(canvas, x + 32, card_y + 36, member.pp, 3);
             }
         }
-        // Money sits above the party while the field is clear; open menus
-        // bring the game's own money window.
+    }
+    // Money sits above the party while the field is clear; open menus
+    // bring the game's own money window.
+    if (field_clear()) {
         const std::string cash = "$" + std::to_string(money_);
-        const int w = std::max(64, (text_width(0, cash) + 31) / 8 * 8);
-        const int money_x = (width + cards_w) / 2 - w;
-        if (windows_.empty()) {
-            draw_window(canvas, money_x, card_y - 36, w, 32);
-            draw_text(canvas, 0, money_x + (w - text_width(0, cash)) / 2, card_y - 28, cash, frame_color(1));
+        const int w = money_width(), left = field_row_left(),
+                  money_x = left + std::max(cards_w, 2 * field_button_w + 8 + w) - w;
+        draw_window(canvas, money_x, field_row_y, w, 32);
+        draw_text(canvas, 0, money_x + (w - text_width(0, cash)) / 2, field_row_y + 8, cash, frame_color(1));
+        static constexpr std::array<std::pair<int, const char *>, 2> shortcuts{{{menu_button, "Menu"},
+                                                                                {talk_button, "Talk to"}}};
+        for (int index = 0; index < 2; ++index) {
+            const auto [id, label] = shortcuts[std::size_t(index)];
+            const int x = left + index * (field_button_w + 4);
+            draw_window(canvas, x, field_row_y, field_button_w, 32, pressed_ == id);
+            draw_text(canvas, 0, x + (field_button_w - text_width(0, label)) / 2, field_row_y + 8, label,
+                      frame_color(1));
         }
     }
     for (const auto &window : windows_)

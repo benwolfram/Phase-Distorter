@@ -260,6 +260,27 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
     write(directory, "game_blank", render(screen));
     screen.publish_party(ram);
 
+    // On a clear field a row offers the command window (A) and Talk to (L);
+    // with three members and $1337 it starts at x 43.
+    screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()), {});
+    for (const auto [x, button] : {std::pair{79, std::uint16_t(0x0080)}, std::pair{155, std::uint16_t(0x0020)}}) {
+        Menu menu;
+        tap(screen, x, 154);
+        menu.run(screen);
+        require(menu.presses == std::vector<std::uint16_t>{button}, "A field shortcut did not press its button");
+    }
+    write(directory, "game_field", render(screen));
+    ram[0x9643] = 1;
+    screen.publish_party(ram);
+    {
+        Menu menu;
+        tap(screen, 79, 154);
+        menu.run(screen);
+        require(menu.presses.empty(), "The field row answered during a battle");
+    }
+    ram[0x9643] = 0;
+    screen.publish_party(ram);
+
     screen.show_message("State saved");
     tap(screen, 50, 250);
     write(directory, "game_message", render(screen));

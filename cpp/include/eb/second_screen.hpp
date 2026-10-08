@@ -114,6 +114,10 @@ private:
     void draw_tabs(Canvas canvas) const;
     void activate(int id);
     void tap_game(int x, int y);
+    // The field row shows while no window is open outside a battle.
+    bool field_clear() const;
+    int field_row_left() const;
+    int money_width() const;
     std::string setting_value(int row) const;
 
     mutable std::mutex mutex_;
@@ -144,6 +148,7 @@ private:
         int last_column = -1, last_line = -1, from_column = -1, from_line = -1, direction = -1;
         std::array<int, 4> failures{};
         std::uint16_t held{}, then{}; // then: a final press after held
+        std::uint16_t button{};       // a field shortcut's pad button
         bool probing{}, confirming{};
     };
     std::deque<Tap> taps_; // in order, so quick taps on the keyboard spell a name
