@@ -103,7 +103,7 @@ private:
     int text_width(int font, std::string_view text) const;
     void draw_text(Canvas canvas, int font, int x, int y, std::string_view text, std::uint32_t color) const;
     void draw_digits(Canvas canvas, int x, int y, int value, int digits) const;
-    void draw_cursor(Canvas canvas, int x, int y) const;
+    void draw_cursor(Canvas canvas, int x, int y, bool left = false) const;
     void draw_backdrop(Canvas canvas, double seconds) const;
 
     // Pages.

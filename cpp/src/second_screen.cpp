@@ -31,6 +31,8 @@ constexpr std::size_t party_members = 39023, party_count = 39075, character_tabl
 constexpr std::size_t window_stats = 0x8650, window_size = 82, open_window_table = 0x88e4,
                       focus_window = 0x8958, option_pool = 0x89d4, option_size = 45, option_count = 70;
 constexpr unsigned naming_keyboard = 28; // window ID of the name entry grid
+constexpr unsigned battle_target = 49;   // "To the ..." while choosing whom to act on
+constexpr int target_arrow_w = 16;       // the panel's step boxes either side of it
 constexpr std::size_t stat_text_x = 14, stat_text_y = 16, stat_first_option = 43, stat_page = 51;
 constexpr std::size_t option_flags = 0, option_next = 2, option_page = 6, option_x = 8, option_y = 10;
 constexpr std::uint16_t button_a = 0x0080, button_b = 0x8000, button_up = 0x0800, button_down = 0x0400,
@@ -468,6 +470,15 @@ void SecondScreen::tap_game(int x, int y) {
     if (windows_.empty()) return;
     x -= area_x, y -= area_y;
     Tap tap;
+    // The boxes beside a battle target window step between targets.
+    for (const auto &window : windows_)
+        if (window.id == battle_target && y >= window.top && y < window.bottom &&
+            ((x >= window.left - target_arrow_w - 2 && x < window.left) ||
+             (x >= window.right && x < window.right + target_arrow_w + 2))) {
+            tap.button = x < window.left ? button_left : button_right;
+            if (taps_.size() < 16) taps_.push_back(tap);
+            return;
+        }
     // Later windows are drawn over earlier ones.
     for (auto window = windows_.rbegin(); window != windows_.rend(); ++window)
         if (x >= window->left && x < window->right && y >= window->top && y < window->bottom) {
@@ -637,12 +648,12 @@ void SecondScreen::draw_digits(Canvas canvas, int x, int y, int value, int digit
     }
 }
 
-void SecondScreen::draw_cursor(Canvas canvas, int x, int y) const {
+void SecondScreen::draw_cursor(Canvas canvas, int x, int y, bool left) const {
     // A small pointing triangle in the frame's highlight colour.
     const auto color = frame_color(1);
     for (int row = 0; row < 7; ++row)
         for (int column = 0; column <= 3 - std::abs(row - 3); ++column) {
-            const int px = x + column, py = y + row;
+            const int px = left ? x + 3 - column : x + column, py = y + row;
             if (px >= 0 && px < width && py >= 0 && py < height) canvas[std::size_t(py) * width + std::size_t(px)] = color;
         }
 }
@@ -768,6 +779,14 @@ void SecondScreen::draw_game(Canvas canvas) const {
             for (int x = window.left; x < window.right; ++x) {
                 const auto pixel = windows_pixels_[std::size_t(y) * 256 + std::size_t(x)];
                 if (pixel >> 24) canvas[std::size_t(y + area_y) * width + std::size_t(x + area_x)] = pixel;
+            }
+    for (const auto &window : windows_)
+        if (window.id == battle_target)
+            for (const bool left : {true, false}) {
+                const int x = area_x + (left ? window.left - target_arrow_w - 2 : window.right + 2),
+                          h = window.bottom - window.top;
+                draw_window(canvas, x, area_y + window.top, target_arrow_w, h);
+                draw_cursor(canvas, x + 6, area_y + window.top + (h - 7) / 2, left);
             }
 }
 

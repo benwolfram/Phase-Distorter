@@ -236,6 +236,22 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
         menu.run(screen);
         require(menu.presses.empty(), "A cancelled tap still pressed buttons");
     }
+    {
+        // Boxes beside a battle target window (ID 49) step Left and Right.
+        const eb::SecondScreen::Window target{100, 40, 220, 72, 49};
+        screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()),
+                               std::span<const eb::SecondScreen::Window>(&target, 1));
+        write(directory, "game_target", render(screen));
+        for (const auto [x, button] : {std::pair{27 + 100 - 9, std::uint16_t(0x0200)},
+                                       std::pair{27 + 220 + 9, std::uint16_t(0x0100)}}) {
+            Menu menu;
+            tap(screen, x, 6 + 50);
+            menu.run(screen);
+            require(menu.presses == std::vector<std::uint16_t>{button}, "A target step box did not press its direction");
+        }
+        screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()),
+                               std::span<const eb::SecondScreen::Window>(&window, 1));
+    }
     write(directory, "game_windows", render(screen));
 
     // In a battle the backdrop becomes the fight's own background; the
