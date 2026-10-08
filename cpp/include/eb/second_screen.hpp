@@ -82,6 +82,7 @@ private:
     struct Member {
         std::string name;
         int level{}, hp{}, max_hp{}, pp{}, max_pp{};
+        float hp_roll{}, pp_roll{};
         bool unconscious{};
         std::string ailment;
     };
@@ -99,11 +100,14 @@ private:
 
     // Drawing primitives.
     std::uint32_t frame_color(int index) const;
-    void draw_tile(Canvas canvas, int x, int y, unsigned entry, float shade = 1.f) const;
+    // first_row and end_row clip the tile to a band of its rows.
+    void draw_tile(Canvas canvas, int x, int y, unsigned entry, float shade = 1.f, int first_row = 0,
+                   int end_row = 8) const;
     void draw_window(Canvas canvas, int x, int y, int w, int h, bool pressed = false, float shade = 1.f) const;
     int text_width(int font, std::string_view text) const;
     void draw_text(Canvas canvas, int font, int x, int y, std::string_view text, std::uint32_t color) const;
-    void draw_digits(Canvas canvas, int x, int y, int value, int digits) const;
+    // roll: the meter's fraction, turning the drums toward the next value.
+    void draw_digits(Canvas canvas, int x, int y, int value, int digits, float roll = 0.f) const;
     void draw_cursor(Canvas canvas, int x, int y, bool left = false) const;
     void draw_backdrop(Canvas canvas, double seconds) const;
 

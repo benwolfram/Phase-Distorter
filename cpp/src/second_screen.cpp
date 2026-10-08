@@ -200,6 +200,8 @@ void SecondScreen::publish_party(std::span<const std::uint8_t> ram) {
         member.level = ram[base + 5];
         member.max_hp = word(base + 10), member.max_pp = word(base + 12);
         member.hp = word(base + 69), member.pp = word(base + 75);
+        // Each meter keeps a fraction below its shown value as it rolls.
+        member.hp_roll = ram[base + 68] / 256.f, member.pp_roll = ram[base + 74] / 256.f;
         member.unconscious = ram[base + 14] == 1;
         // Seven affliction groups follow max PP; the first set one is shown.
         static constexpr std::array<std::array<const char *, 8>, 6> ailments{{
@@ -589,13 +591,14 @@ std::uint32_t SecondScreen::frame_color(int index) const {
     return argb(flavour_palettes_[std::size_t(flavour_) * 32 + 28 + std::size_t(index)]);
 }
 
-void SecondScreen::draw_tile(Canvas canvas, int x, int y, unsigned entry, float amount) const {
+void SecondScreen::draw_tile(Canvas canvas, int x, int y, unsigned entry, float amount, int first_row,
+                             int end_row) const {
     const std::size_t base = (entry & 0x3ff) * 16;
     if (base + 16 > window_tiles_.size()) return;
     // Bit 13 selects the highlight flavour; the game's own entries never set it here.
     const std::size_t flavour = entry & 0x2000 ? std::size_t(flavour_ == highlight_flavour ? 1 : highlight_flavour)
                                                 : std::size_t(flavour_);
-    for (int row = 0; row < 8; ++row) {
+    for (int row = std::max(first_row, 0); row < std::min(end_row, 8); ++row) {
         const int py = y + row;
         if (py < 0 || py >= height) continue;
         const int r = entry & flip_v ? 7 - row : row;
@@ -659,17 +662,27 @@ void SecondScreen::draw_text(Canvas canvas, int font_index, int x, int y, std::s
     }
 }
 
-void SecondScreen::draw_digits(Canvas canvas, int x, int y, int value, int digits) const {
-    // The rolling HP/PP meter digits: a top tile over an underlined bottom tile.
+void SecondScreen::draw_digits(Canvas canvas, int x, int y, int value, int digits, float roll) const {
+    // The rolling HP/PP meter digits: a top tile over an underlined bottom
+    // tile. Like the game's odometer, a drum turns by the meter's fraction,
+    // carrying into the next place while the lower ones read all nines.
     value = std::clamp(value, 0, 999);
-    for (int place = digits - 1; place >= 0; --place) {
-        const int digit = value % 10;
-        const int px = x + place * 8;
-        if (value || place == digits - 1) {
-            draw_tile(canvas, px, y, 0x20u + unsigned(digit));
-            draw_tile(canvas, px, y + 8, 0x30u + unsigned(digit));
-        }
-        value /= 10;
+    constexpr int drum = 12; // glyph rows above the underline
+    const auto rows = [&](int px, int py, int digit, int first, int end) {
+        draw_tile(canvas, px, py, 0x20u + unsigned(digit), 1.f, first, end);
+        draw_tile(canvas, px, py + 8, 0x30u + unsigned(digit), 1.f, first - 8, end - 8);
+    };
+    bool carry = true;
+    for (int place = 0, rest = value; place < digits; ++place, rest /= 10) {
+        const int digit = rest % 10, px = x + (digits - 1 - place) * 8;
+        const int shift = carry && value < 999 ? std::clamp(int(roll * drum), 0, drum - 1) : 0;
+        const bool lead = rest == 0 && place > 0;
+        if (lead && !shift) break;
+        // The settled digit slides down as the next one enters from above.
+        if (!lead) rows(px, y + shift, digit, 0, drum - shift);
+        if (shift) rows(px, y + shift - drum, (digit + 1) % 10, drum - shift, drum);
+        rows(px, y, digit, drum, 16);
+        carry = carry && digit == 9;
     }
 }
 
@@ -779,10 +792,10 @@ void SecondScreen::draw_game(Canvas canvas) const {
             draw_text(canvas, font, x + (72 - text_width(font, title)) / 2, card_y + (font ? 6 : 4), title,
                       shade(frame_color(ailing ? 2 : 1), amount));
             draw_text(canvas, 3, x + 9, card_y + 25, "HP", shade(frame_color(2), amount));
-            draw_digits(canvas, x + 32, card_y + 20, member.hp, 3);
+            draw_digits(canvas, x + 32, card_y + 20, member.hp, 3, member.hp_roll);
             if (member.max_pp) {
                 draw_text(canvas, 3, x + 9, card_y + 41, "PP", shade(frame_color(2), amount));
-                draw_digits(canvas, x + 32, card_y + 36, member.pp, 3);
+                draw_digits(canvas, x + 32, card_y + 36, member.pp, 3, member.pp_roll);
             }
         }
     }
