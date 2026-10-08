@@ -259,6 +259,9 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
         --tap.rest;
         return 0;
     }
+    // A final press rests long enough for whatever it opens to take input
+    // before the next queued tap starts.
+    constexpr int settle = 6;
     const auto press = [&](std::uint16_t button, int rest) {
         tap.held = button;
         tap.hold = 1;
@@ -267,7 +270,7 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
     };
     if (tap.confirming && tap.then) {
         const auto button = std::exchange(tap.then, 0);
-        return press(button, 0);
+        return press(button, settle);
     }
     if (tap.confirming || ++tap.frames > 240 || ram.size() < option_pool + option_size * option_count) {
         taps_.pop_front();
@@ -289,11 +292,11 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
             return 0;
         }
         tap.confirming = true;
-        return press(tap.button, 6);
+        return press(tap.button, settle);
     }
     if (tap.window < 0) {
         tap.confirming = true;
-        return press(button_b, 0);
+        return press(button_b, settle);
     }
     const auto target_record = record(unsigned(tap.window));
     if (!target_record) {
@@ -352,7 +355,7 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
             return step(3);
         }
         tap.confirming = true;
-        return press(button_a, 0);
+        return press(button_a, settle);
     }
     // Text and prompts take A. Windows behind the focused menu do nothing,
     // so a stray tap on a question's dialogue never answers it.
@@ -362,7 +365,7 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
             return 0;
         }
         tap.confirming = true;
-        return press(button_a, 0);
+        return press(button_a, settle);
     }
     if (focus != unsigned(tap.window)) {
         // A parent menu: back out of the focused one, then select as usual.
@@ -398,7 +401,7 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
     if (!current || tap.stable < 1) return 0;
     if (current->x == target->x && current->y == target->y) {
         tap.confirming = true;
-        return press(button_a, 0);
+        return press(button_a, settle);
     }
     const int dx = target->x - current->x, dy = target->y - current->y;
     // Irregular layouts fall back to the other axis when one sticks.
