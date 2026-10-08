@@ -201,6 +201,19 @@ void SecondScreen::publish_party(std::span<const std::uint8_t> ram) {
         member.max_hp = word(base + 10), member.max_pp = word(base + 12);
         member.hp = word(base + 69), member.pp = word(base + 75);
         member.unconscious = ram[base + 14] == 1;
+        // Seven affliction groups follow max PP; the first set one is shown.
+        static constexpr std::array<std::array<const char *, 8>, 6> ailments{{
+            {"", "Unconscious", "Diamondized", "Paralyzed", "Nauseous", "Poisoned", "Sunstroke", "Cold"},
+            {"", "Mushroomized", "Possessed"},
+            {"", "Asleep", "Crying", "Immobilized", "Solidified"},
+            {"", "Feeling strange"},
+            {"", "Can't focus"},
+            {"", "Homesick"},
+        }};
+        for (std::size_t group = 0; group < ailments.size() && member.ailment.empty(); ++group) {
+            const unsigned value = ram[base + 14 + group];
+            if (value < 8 && ailments[group][value]) member.ailment = ailments[group][value];
+        }
         // The title screen's attract mode runs with a blank record.
         if (member.name.empty() || !member.max_hp) continue;
         party.push_back(std::move(member));
@@ -730,6 +743,7 @@ int SecondScreen::field_row_left() const {
 }
 
 void SecondScreen::draw_game(Canvas canvas) const {
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     const auto overlaps = [&](int x, int y, int w, int h) {
         for (const auto &window : windows_)
             if (window.left + area_x < x + w && window.right + area_x > x && window.top + area_y < y + h &&
@@ -746,8 +760,12 @@ void SecondScreen::draw_game(Canvas canvas) const {
             const int x = (width - cards_w) / 2 + index * 76;
             const float amount = member.unconscious ? 0.55f : 1.f;
             draw_window(canvas, x, card_y, 72, 56, false, amount);
-            draw_text(canvas, 0, x + (72 - text_width(0, member.name)) / 2, card_y + 4, member.name,
-                      shade(frame_color(1), amount));
+            // An ailment takes turns with the name every two seconds.
+            const bool ailing = !member.ailment.empty() && int(seconds / 2) % 2;
+            const auto &title = ailing ? member.ailment : member.name;
+            const int font = text_width(0, title) <= 64 ? 0 : 3;
+            draw_text(canvas, font, x + (72 - text_width(font, title)) / 2, card_y + (font ? 6 : 4), title,
+                      shade(frame_color(ailing ? 2 : 1), amount));
             draw_text(canvas, 3, x + 9, card_y + 25, "HP", shade(frame_color(2), amount));
             draw_digits(canvas, x + 32, card_y + 20, member.hp, 3);
             if (member.max_pp) {

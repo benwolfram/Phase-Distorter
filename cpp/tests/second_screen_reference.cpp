@@ -269,6 +269,22 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
     ram[0x9643] = 0;
     screen.publish_party(ram);
 
+    // Ailments take turns with names on the cards: Paula poisoned, Jeff asleep.
+    ram[39374 + 95 + 14] = 5, ram[39374 + 2 * 95 + 16] = 1;
+    screen.publish_party(ram);
+    const auto cards = [&] {
+        const auto canvas = render(screen);
+        return std::vector<std::uint32_t>(canvas.begin() + eb::SecondScreen::width * 174,
+                                          canvas.begin() + eb::SecondScreen::width * 190);
+    };
+    const auto first_cards = cards();
+    write(directory, "game_ailing_a", render(screen));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+    require(cards() != first_cards, "Ailments did not alternate with names");
+    write(directory, "game_ailing_b", render(screen));
+    ram[39374 + 95 + 14] = 0, ram[39374 + 2 * 95 + 16] = 0;
+    screen.publish_party(ram);
+
     // The title screen's attract mode runs with a blank party record.
     std::vector<std::uint8_t> blank(0x20000);
     blank[39023] = 1, blank[39075] = 1;

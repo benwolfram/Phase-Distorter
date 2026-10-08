@@ -83,6 +83,7 @@ private:
         std::string name;
         int level{}, hp{}, max_hp{}, pp{}, max_pp{};
         bool unconscious{};
+        std::string ailment;
     };
     struct Backdrop {
         std::vector<std::uint8_t> indices; // 256x256 palette indices
