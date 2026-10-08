@@ -13,17 +13,31 @@ struct DisplaySettings {
     static constexpr int native_width = 256;
     static constexpr int native_height = 224;
     static constexpr int maximum_width = 1024;
+#ifdef __ANDROID__
+    // Handheld defaults: fill a 16:9 panel and present up to 120 Hz. These
+    // are defaults rather than launch arguments so in-game changes persist.
+    bool widescreen = true;
+#else
     bool widescreen = false;
+#endif
     // Optional host-picture processing, independent of aspect ratio. Keeping it
     // off by default preserves the original output until a user opts in.
     bool reduce_flashing = false;
     bool crt_filter = false;
     bool variable_refresh = false;
     // 60 selects the original cadence; 0 means uncapped presentation.
+#ifdef __ANDROID__
+    int frame_limit = 120;
+#else
     int frame_limit = 60;
+#endif
     bool interpolate_frames = true;
     // Source-scene rendering takes precedence over legacy frame generation.
     bool direct_rendering = true;
+    // Handheld second panel: show text windows there instead of over the
+    // game, and which battle background it animates behind them.
+    bool second_screen_windows = true;
+    int second_screen_backdrop = 0;
     bool high_frame_rate() const { return frame_limit == 0 || frame_limit > 60; }
     static bool valid_frame_limit(int value) { return value == 0 || (value >= 60 && value <= 300); }
     AspectRatio aspect = AspectRatio::SixteenNine;

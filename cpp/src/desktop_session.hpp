@@ -3,6 +3,7 @@
 #include "eb/native_session.hpp"
 #include "eb/launch_options.hpp"
 #include "eb/session_storage.hpp"
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <utility>
@@ -42,6 +43,16 @@ public:
         if(native_) native_->configure_presentation(width,flashing,direct);
         else compatibility_->configure_presentation(width,flashing,direct);
     }
+    // Native continuations draw no source windows; a second display simply
+    // shows none there and machine RAM is not available to read.
+    void configure_window_display(bool tracked,bool hidden) {
+        if(compatibility_) compatibility_->configure_window_display(tracked,hidden);
+    }
+    unsigned capture_windows(std::span<std::uint32_t,256*224> pixels,std::span<GameSession::WindowRect,8> windows) const {
+        if(native_) { std::ranges::fill(pixels,0u); return 0; }
+        return compatibility_->capture_windows(pixels,windows);
+    }
+    std::span<const std::uint8_t> work_ram() const { return native_?std::span<const std::uint8_t>{}:compatibility_->work_ram(); }
     void observe_completed_frames(GameSession::FrameObserver observer) {
         if(native_) native_->observe_completed_frames(std::move(observer));
         else compatibility_->observe_completed_frames(std::move(observer));

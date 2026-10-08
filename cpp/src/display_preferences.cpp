@@ -36,7 +36,13 @@ eb::DisplaySettings load_display_settings(const std::string &path, eb::GameVersi
                 settings.interpolate_frames = value == "1";
             else if (key == "direct_rendering" && (value == "0" || value == "1"))
                 settings.direct_rendering = value == "1";
-            else if (key == "frame_limit") {
+            else if (key == "second_screen_windows" && (value == "0" || value == "1"))
+                settings.second_screen_windows = value == "1";
+            else if (key == "second_screen_backdrop") {
+                const auto backdrop = std::stoi(value, &used);
+                if (used == value.size() && backdrop >= 0 && backdrop < 64)
+                    settings.second_screen_backdrop = backdrop;
+            } else if (key == "frame_limit") {
                 const auto limit = std::stoi(value, &used);
                 if (used == value.size() && eb::DisplaySettings::valid_frame_limit(limit))
                     settings.frame_limit = limit;
@@ -103,7 +109,9 @@ void store_display_settings(const std::string &path, const eb::DisplaySettings &
                << int(settings.variable_refresh) << "\nframe_limit " << settings.frame_limit
                << "\ninterpolate_frames " << int(settings.interpolate_frames)
                << "\ncrt_filter " << int(settings.crt_filter)
-               << "\ndirect_rendering " << int(settings.direct_rendering) << "\ncustom_aspect "
+               << "\ndirect_rendering " << int(settings.direct_rendering)
+               << "\nsecond_screen_windows " << int(settings.second_screen_windows)
+               << "\nsecond_screen_backdrop " << settings.second_screen_backdrop << "\ncustom_aspect "
                << std::setprecision(9) << settings.custom_aspect << "\ngame " << game_basename(game) << '\n';
         output.close();
         if (!output)

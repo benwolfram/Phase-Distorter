@@ -65,6 +65,8 @@ LaunchOptions parse_options(int argc, char **argv) {
                          "  --screenshot FILE  Write final framebuffer as binary PPM\n"
                          "  --presentation-screenshot FILE  Write the adapted picture as PPM\n"
                          "  --gl-screenshot FILE  Read back the final OpenGL image as PPM\n"
+                         "  --second-screen-screenshot FILE  Write the handheld second-panel picture as PPM\n"
+                         "  --second-screen-tab TAB  game, states, or settings for that capture\n"
                          "  --save FILE        Load and save the 8 KiB battery RAM file\n"
                          "  --no-save          Disable automatic desktop save persistence\n"
                          "  --wav FILE         Record DSP output as 32 kHz stereo PCM WAV\n"
@@ -176,6 +178,15 @@ LaunchOptions parse_options(int argc, char **argv) {
             options.presentation_screenshot = next();
         else if (arg == "--gl-screenshot")
             options.gl_screenshot = next();
+        else if (arg == "--second-screen-screenshot")
+            options.second_screen_screenshot = next();
+        else if (arg == "--second-screen-tab") {
+            const std::string tab = next();
+            if (tab == "game") options.second_screen_tab = 0;
+            else if (tab == "states") options.second_screen_tab = 1;
+            else if (tab == "settings") options.second_screen_tab = 2;
+            else throw std::runtime_error("--second-screen-tab must be game, states, or settings");
+        }
         else if (arg == "--save")
             options.save = next();
         else if (arg == "--wav")

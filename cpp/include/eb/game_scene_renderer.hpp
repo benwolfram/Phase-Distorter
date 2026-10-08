@@ -122,6 +122,21 @@ class GameSceneRenderer {
                                         bool margin);
     void render_presentation_margins(const SceneReadView &view, unsigned y);
     void enable_direct_rendering(bool enabled) { direct_capture_.enable(enabled); }
+    // Dual-screen frontends track source windows at every width and may omit
+    // them from a widescreen picture while another display shows them. RAM,
+    // VRAM and the native framebuffer are unchanged either way.
+    void set_presentation_window_display(bool tracked, bool hidden) {
+        presentation_track_windows_ = tracked;
+        presentation_hide_windows_ = tracked && hidden;
+    }
+    struct WindowCapture {
+        int left{}, top{}, right{}, bottom{};
+        unsigned id{};
+    };
+    // Copies the source window layer inside each window tracked for the last
+    // scanline, in image-row coordinates. Everything else becomes zero.
+    unsigned capture_presentation_windows(const SceneReadView &view, std::span<uint32_t, 256 * 224> pixels,
+                                          std::span<WindowCapture, 8> windows) const;
     void capture_direct_scanline(const SceneReadView& view, unsigned y) { direct_capture_.scanline(view, *this, y); }
     std::shared_ptr<const DirectSceneFrame> direct_scene() const { return direct_capture_.frame(); }
 
@@ -171,6 +186,14 @@ class GameSceneRenderer {
     unsigned presentation_ui_window_count_{};
     unsigned presentation_ui_layer_ = 4;
     bool presentation_left_windows_{};
+    bool presentation_track_windows_{}, presentation_hide_windows_{};
+    // True where a widescreen picture omits a window shown on another display.
+    bool presentation_window_hidden(int x, unsigned y) const {
+        if (!presentation_hide_windows_ || presentation_width_ == 256) return false;
+        for (unsigned index = 0; index < presentation_ui_window_count_; ++index)
+            if (presentation_ui_windows_[index].contains(x, int(y))) return true;
+        return false;
+    }
     // Set while sampling a moved window strip that a later window covers.
     int presentation_rebuilt_window_ = -1;
     std::array<WindowArt, 8> presentation_window_art_{};

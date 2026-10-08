@@ -7,6 +7,7 @@
 #include "eb/spc700_audio_cpu.hpp"
 #include "eb/snapshot_archive.hpp"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -94,6 +95,24 @@ void GameSession::configure_presentation(unsigned width, bool identify_flashing_
     state_->main_cpu.set_world_preload_width(state_->hardware.native_sprite_runtime() ? width : 256);
     state_->hardware.set_presentation_effects_enabled(identify_flashing_effects);
     state_->hardware.set_direct_rendering_enabled(direct_rendering);
+}
+
+void GameSession::configure_window_display(bool tracked, bool hidden) {
+    state_->hardware.set_presentation_window_display(tracked, hidden);
+}
+
+unsigned GameSession::capture_windows(std::span<std::uint32_t, 256 * 224> pixels,
+                                      std::span<WindowRect, 8> windows) const {
+    std::array<GameSceneRenderer::WindowCapture, 8> captured{};
+    const unsigned count = state_->hardware.capture_presentation_windows(pixels, captured);
+    for (unsigned index = 0; index < count; ++index)
+        windows[index] = {captured[index].left, captured[index].top, captured[index].right,
+                          captured[index].bottom, captured[index].id};
+    return count;
+}
+
+std::span<const std::uint8_t> GameSession::work_ram() const {
+    return state_->hardware.work_ram;
 }
 
 void GameSession::enable_host_sprite_resources(bool enabled) {

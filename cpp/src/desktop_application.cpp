@@ -9,6 +9,7 @@
 #include "eb/launch_options.hpp"
 #include "eb/presentation_pipeline.hpp"
 #include "eb/presentation_wait.hpp"
+#include "eb/second_screen.hpp"
 #include "eb/session_storage.hpp"
 #include "eb/snapshot_store.hpp"
 #include "generated_assets.hpp"
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -33,6 +35,51 @@ namespace eb {
 namespace {
 constexpr int width = DisplaySettings::native_width;
 constexpr int height = DisplaySettings::native_height;
+
+SecondScreen::Settings second_screen_settings(const DisplaySettings &settings) {
+    return {settings.second_screen_windows, settings.widescreen, settings.crt_filter, settings.reduce_flashing,
+            settings.interpolate_frames, settings.frame_limit,
+            std::clamp(settings.second_screen_backdrop, 0, SecondScreen::backdrop_count - 1)};
+}
+
+void apply_second_screen_settings(const SecondScreen::Settings &chosen, DisplaySettings &settings) {
+    settings.second_screen_windows = chosen.windows_below;
+    settings.widescreen = chosen.widescreen;
+    settings.crt_filter = chosen.crt_filter;
+    settings.reduce_flashing = chosen.reduce_flashing;
+    settings.interpolate_frames = chosen.interpolate_frames;
+    if (DisplaySettings::valid_frame_limit(chosen.frame_limit)) settings.frame_limit = chosen.frame_limit;
+    settings.second_screen_backdrop = chosen.backdrop;
+}
+
+// Snapshot cards show a half-size RGB capture stored beside each state.
+void store_thumbnail(const std::filesystem::path &path, std::span<const std::uint32_t, width * height> pixels) {
+    std::vector<char> rgb;
+    rgb.reserve(std::size_t(SecondScreen::thumbnail_width) * SecondScreen::thumbnail_height * 3);
+    for (int y = 0; y < SecondScreen::thumbnail_height; ++y)
+        for (int x = 0; x < SecondScreen::thumbnail_width; ++x)
+            for (const unsigned shift : {16u, 8u, 0u}) {
+                unsigned sum = 0;
+                for (int dy = 0; dy < 2; ++dy)
+                    for (int dx = 0; dx < 2; ++dx)
+                        sum += (pixels[std::size_t(y * 2 + dy) * width + std::size_t(x * 2 + dx)] >> shift) & 255;
+                rgb.push_back(char(sum / 4));
+            }
+    std::ofstream output(path, std::ios::binary);
+    output.write(rgb.data(), std::streamsize(rgb.size()));
+}
+
+std::vector<std::uint32_t> load_thumbnail(const std::filesystem::path &path) {
+    const std::size_t count = std::size_t(SecondScreen::thumbnail_width) * SecondScreen::thumbnail_height;
+    std::ifstream input(path, std::ios::binary);
+    std::vector<unsigned char> rgb(count * 3);
+    if (!input.read(reinterpret_cast<char *>(rgb.data()), std::streamsize(rgb.size()))) return {};
+    std::vector<std::uint32_t> pixels(count);
+    for (std::size_t index = 0; index < count; ++index)
+        pixels[index] = 0xff000000u | std::uint32_t(rgb[index * 3]) << 16 | std::uint32_t(rgb[index * 3 + 1]) << 8 |
+                        rgb[index * 3 + 2];
+    return pixels;
+}
 
 // Compose one interactive/headless run. Module owners are destroyed before a
 // requested game switch, so settings may persist while machine state cannot.
@@ -141,22 +188,65 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
         session.observe_completed_frames(
             [&](PresentationFrame frame) { presentation.completed_frame(frame); });
 
-        SnapshotStore snapshots(native_path(preferences) / "snapshots" / game_basename(game));
+        const auto snapshot_directory = native_path(preferences) / "snapshots" / game_basename(game);
+        SnapshotStore snapshots(snapshot_directory);
         std::vector<SaveStateSnapshotInfo> snapshot_list;
+        // Handheld second panel (AYN Thor bottom screen): text windows, save
+        // states and settings move there. Headless capture uses the same path.
+        std::unique_ptr<SecondScreen> second_screen;
+#ifdef __ANDROID__
+        const bool want_second_screen = true;
+#else
+        const bool want_second_screen = !options.second_screen_screenshot.empty();
+#endif
+        if (want_second_screen && !session.native() && SecondScreen::supported(game)) {
+            try {
+                second_screen = std::make_unique<SecondScreen>(program.image, game);
+                second_screen->select_tab(SecondScreen::Tab(options.second_screen_tab));
+                second_screen->publish_settings(second_screen_settings(settings));
+            } catch (const std::exception &error) {
+                std::cerr << "Second screen disabled: " << error.what() << '\n';
+                second_screen.reset();
+            }
+        }
+        SecondScreenRegistration second_screen_registration(second_screen.get());
+        const auto thumbnail_path = [&](const std::string &id) { return snapshot_directory / (id + ".thumb"); };
         const auto refresh_snapshots = [&](const std::string &message) {
-            if (!display) return;
+            if (!display && !second_screen) return;
             if (session.native()) {
-                display->set_snapshot_state({}, "Machine snapshots are unavailable in a native session", false);
+                if (display)
+                    display->set_snapshot_state({}, "Machine snapshots are unavailable in a native session", false);
                 return;
             }
             try {
                 snapshot_list = snapshots.list();
-                display->set_snapshot_state(snapshot_list, message, true);
+                if (display) display->set_snapshot_state(snapshot_list, message, true);
             } catch (const std::exception &error) {
-                display->set_snapshot_state(snapshot_list, std::string("Cannot list snapshots: ") + error.what(), true);
+                if (display)
+                    display->set_snapshot_state(snapshot_list, std::string("Cannot list snapshots: ") + error.what(), true);
+            }
+            if (second_screen) {
+                std::vector<SecondScreen::Snapshot> cards;
+                for (const auto &info : snapshot_list)
+                    cards.push_back({info.id, info.created_at_unix, load_thumbnail(thumbnail_path(info.id))});
+                second_screen->publish_snapshots(std::move(cards));
             }
         };
         refresh_snapshots("");
+        const auto save_state = [&](std::string_view name) {
+            const auto state = session.save_snapshot();
+            const auto saved = snapshots.save(name, session.frames(), state);
+            try {
+                store_thumbnail(thumbnail_path(saved.id), session.native_pixels());
+            } catch (const std::exception &) { /* A missing thumbnail only blanks its card. */
+            }
+            return saved;
+        };
+        const auto erase_state = [&](const std::string &id) {
+            snapshots.erase(id);
+            std::error_code ignored;
+            std::filesystem::remove(thumbnail_path(id), ignored);
+        };
 
         const auto drain_audio = [&] {
             const auto samples = session.take_audio_samples();
@@ -195,6 +285,56 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
             flushed_save.assign(memory.begin(), memory.end());
         };
 #endif
+        const auto load_state = [&](const std::string &id) {
+            const auto state = snapshots.load(id);
+            session.load_snapshot(state);
+            input.seek(session.frames());
+            // Replace the old borrowed canvas before any
+            // host reconfiguration can allocate or fail.
+            presentation.restored_frame(session.presentation_frame(), std::chrono::steady_clock::now());
+            if (audio) audio->clear();
+            configure_desktop_presentation(session, settings,
+                display ? display->render_width()
+                        : settings.render_width(width * options.scale, height * options.scale));
+            presentation.restored_frame(session.presentation_frame(), std::chrono::steady_clock::now());
+            if (display) display->adopt_debug(session.debug());
+        };
+        // Bottom-screen requests are applied between simulation advances, like
+        // the desktop panel's, and report back through a short message.
+        const auto apply_second_screen_commands = [&] {
+            for (const auto &command : second_screen->take_commands()) {
+                try {
+                    switch (command.kind) {
+                    case SecondScreen::Command::Kind::Save:
+                        save_state("Bottom screen");
+                        refresh_snapshots("");
+                        second_screen->show_message("State saved");
+                        break;
+                    case SecondScreen::Command::Kind::Load:
+                        load_state(command.id);
+                        refresh_snapshots("");
+                        second_screen->show_message("State loaded");
+                        break;
+                    case SecondScreen::Command::Kind::Delete:
+                        erase_state(command.id);
+                        refresh_snapshots("");
+                        second_screen->show_message("State deleted");
+                        break;
+                    case SecondScreen::Command::Kind::Settings:
+                        apply_second_screen_settings(command.settings, settings);
+                        // Android can kill the app without a clean exit, so
+                        // a bottom-screen change is persisted immediately.
+                        if (display) store_display_settings(options.config, settings, game);
+                        break;
+                    }
+                } catch (const std::exception &error) {
+                    second_screen->show_message(std::string("Failed: ") + error.what());
+                }
+            }
+            second_screen->publish_settings(second_screen_settings(settings));
+        };
+        auto window_pixels = std::make_unique<std::array<std::uint32_t, width * height>>();
+        bool second_screen_active = false;
         int status = 0;
         try {
             for (;;) {
@@ -219,27 +359,17 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                             std::string message;
                             switch (action->kind) {
                             case SaveStateSnapshotRequest::Kind::Save: {
-                                const auto state = session.save_snapshot();
-                                const auto saved = snapshots.save(action->value, session.frames(), state);
+                                const auto saved = save_state(action->value);
                                 message = "Saved snapshot: " + saved.name;
                                 break;
                             }
                             case SaveStateSnapshotRequest::Kind::Load: {
-                                const auto state = snapshots.load(action->value);
-                                session.load_snapshot(state);
-                                input.seek(session.frames());
-                                // Replace the old borrowed canvas before any
-                                // host reconfiguration can allocate or fail.
-                                presentation.restored_frame(session.presentation_frame(), std::chrono::steady_clock::now());
-                                if (audio) audio->clear();
-                                configure_desktop_presentation(session, settings, display->render_width());
-                                presentation.restored_frame(session.presentation_frame(), std::chrono::steady_clock::now());
-                                display->adopt_debug(session.debug());
+                                load_state(action->value);
                                 message = "Loaded snapshot at frame " + std::to_string(session.frames());
                                 break;
                             }
                             case SaveStateSnapshotRequest::Kind::Delete:
-                                snapshots.erase(action->value);
+                                erase_state(action->value);
                                 message = "Deleted snapshot";
                                 break;
                             case SaveStateSnapshotRequest::Kind::Refresh:
@@ -264,6 +394,15 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                         presentation.reset_native_deadline(std::chrono::steady_clock::now());
                     }
                 }
+                if (second_screen) {
+                    apply_second_screen_commands();
+                    // Windows are tracked only while a panel shows them, so a
+                    // detached or absent second screen leaves the top unchanged.
+                    second_screen_active = second_screen_attached() || !options.second_screen_screenshot.empty();
+                    session.configure_window_display(second_screen_active, second_screen_active &&
+                                                                               settings.second_screen_windows &&
+                                                                               second_screen->showing_windows());
+                }
                 configure_desktop_presentation(session, settings,
                     display ? display->render_width()
                             : settings.render_width(width * options.scale, height * options.scale));
@@ -278,6 +417,15 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                 drain_audio();
                 presentation.simulation_finished(session.presentation_frame(), completed_frames,
                                                  std::chrono::steady_clock::now());
+                if (second_screen_active) {
+                    std::array<GameSession::WindowRect, 8> rects{};
+                    const unsigned count = session.capture_windows(*window_pixels, rects);
+                    std::vector<SecondScreen::Window> windows;
+                    for (unsigned index = 0; index < count; ++index)
+                        windows.push_back({rects[index].left, rects[index].top, rects[index].right, rects[index].bottom});
+                    second_screen->publish_windows(*window_pixels, windows);
+                    second_screen->publish_party(session.work_ram());
+                }
 #ifdef __ANDROID__
                 flush_changed_save();
 #endif
@@ -308,6 +456,17 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
         if (!options.presentation_screenshot.empty()) {
             const auto picture = presentation.current_picture();
             presentation_screenshot(options.presentation_screenshot, picture.pixels, int(picture.width));
+        }
+        if (second_screen && !options.second_screen_screenshot.empty()) {
+            std::vector<std::uint32_t> canvas(std::size_t(SecondScreen::width) * SecondScreen::height);
+            second_screen->render(std::span<std::uint32_t, SecondScreen::width * SecondScreen::height>(canvas));
+            std::ofstream output(native_path(options.second_screen_screenshot), std::ios::binary);
+            output << "P6\n" << SecondScreen::width << ' ' << SecondScreen::height << "\n255\n";
+            for (const auto pixel : canvas) {
+                const char rgb[] = {char(pixel >> 16), char(pixel >> 8), char(pixel)};
+                output.write(rgb, sizeof rgb);
+            }
+            if (!output) throw std::runtime_error("Cannot write second screen capture: " + options.second_screen_screenshot);
         }
         if (status == 0 && !options.save.empty())
             store_save(options.save, session.save_memory());
@@ -369,6 +528,7 @@ int run_application(int argc, char **argv) {
             options.screenshot.clear();
             options.gl_screenshot.clear();
             options.presentation_screenshot.clear();
+            options.second_screen_screenshot.clear();
             options.wav.clear();
             options.input_script.clear();
             options.replay_only = false;

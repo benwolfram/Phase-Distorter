@@ -45,6 +45,9 @@ struct LaunchOptions {
     std::string wav;
     std::string input_script;
     std::string presentation_screenshot;
+    // Headless capture of the handheld second-panel picture, and its tab.
+    std::string second_screen_screenshot;
+    int second_screen_tab = 0;
     std::string assets;
     std::string import_rom;
     std::string config;

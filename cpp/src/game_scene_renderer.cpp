@@ -245,7 +245,7 @@ void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view, 
     presentation_ui_window_count_ = 0;
     presentation_ui_layer_ = 4;
     presentation_left_windows_ = false;
-    if (presentation_width_ == 256) return;
+    if (presentation_width_ == 256 && !presentation_track_windows_) return;
     for (unsigned layer = 0; layer < 4; ++layer)
         if (source_window_layer(view, layer) &&
             ((view.ppu_registers[0x2c] | view.ppu_registers[0x2d]) & (1u << layer))) {
@@ -366,7 +366,37 @@ void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view, 
     }
     presentation_ui_windows_ = visible;
     presentation_ui_window_count_ = visible_count;
-    presentation_left_windows_ = moved;
+    presentation_left_windows_ = moved && presentation_width_ > 256 && !presentation_hide_windows_;
+}
+
+unsigned GameSceneRenderer::capture_presentation_windows(const SceneReadView &view,
+                                                         std::span<uint32_t, 256 * 224> pixels,
+                                                         std::span<WindowCapture, 8> windows) const {
+    std::fill(pixels.begin(), pixels.end(), 0u);
+    if (presentation_ui_layer_ == 4 || (view.ppu_registers[0] & 0x80)) return 0;
+    const unsigned brightness = view.ppu_registers[0] & 15;
+    unsigned count = 0;
+    for (unsigned index = 0; index < presentation_ui_window_count_; ++index) {
+        const auto &window = presentation_ui_windows_[index];
+        const int left = std::max(window.left, 0), right = std::min(window.right, 256),
+                  top = std::max(window.top, 0), bottom = std::min(window.bottom, 224);
+        if (left >= right || top >= bottom) continue;
+        windows[count++] = {left, top, right, bottom, window.id};
+        // Later windows sit above earlier ones on the shared page, which
+        // already holds the topmost artwork, so overlaps need no ordering.
+        for (int y = top; y < bottom; ++y)
+            for (int x = left; x < right; ++x) {
+                const auto pixel = view.sample_background_pixel(presentation_ui_layer_, x, unsigned(y + 1), nullptr);
+                if (pixel.priority < 0) continue;
+                const auto channel = [&](unsigned shift) {
+                    const unsigned value = (pixel.color >> shift) & 31;
+                    return (value * 255 / 31) * (brightness + 1) / 16;
+                };
+                pixels[std::size_t(y) * 256 + std::size_t(x)] =
+                    0xff000000u | channel(0) << 16 | channel(5) << 8 | channel(10);
+            }
+    }
+    return count;
 }
 
 std::optional<GameSceneRenderer::WindowSample> GameSceneRenderer::presentation_window_sample(int x,
@@ -1283,7 +1313,7 @@ void GameSceneRenderer::render_presentation_margins(const SceneReadView &view, u
                     objects[x] = world_objects[x];
         }
     }
-    if (presentation_left_windows_ || presentation_aperture_ || presentation_robot_ending_ || presentation_psi_display_layer_ || presentation_screen_overlay_layer_ || presentation_shift_x_ ||
+    if (presentation_left_windows_ || (presentation_hide_windows_ && presentation_ui_window_count_) || presentation_aperture_ || presentation_robot_ending_ || presentation_psi_display_layer_ || presentation_screen_overlay_layer_ || presentation_shift_x_ ||
         (presentation_world_map_ && (presentation_clip_left_ > 0 || presentation_clip_right_ < 256))) {
         for (unsigned x = 0; x < presentation_width_; ++x)
             output[x] = compose_presentation_pixel(view, int(x) - int(margin), y, objects[x], true);

@@ -129,6 +129,13 @@ class SnesBus {
     }
     unsigned presentation_width() const { return scene_renderer_.presentation_width(); }
     void set_direct_rendering_enabled(bool enabled) { scene_renderer_.enable_direct_rendering(enabled); }
+    void set_presentation_window_display(bool tracked, bool hidden) {
+        scene_renderer_.set_presentation_window_display(tracked, hidden);
+    }
+    unsigned capture_presentation_windows(std::span<uint32_t, 256 * 224> pixels,
+                                          std::span<GameSceneRenderer::WindowCapture, 8> windows) const {
+        return scene_renderer_.capture_presentation_windows(scene_view(), pixels, windows);
+    }
     std::shared_ptr<const DirectSceneFrame> direct_scene() const { return scene_renderer_.direct_scene(); }
     std::span<const uint32_t> presentation_pixels() const {
         return scene_renderer_.presentation_pixels(native_framebuffer);

@@ -369,6 +369,8 @@ GameSceneRenderer::CompositePixel GameSceneRenderer::compose_pixel(
         const bool scenery = presentation_layer_mask_ & (1 << layer);
         const bool screen_overlay = margin && (presentation_screen_overlay_layer_ & (1u << layer));
         const bool moved_window = margin && presentation_left_windows_ && layer == presentation_ui_layer_;
+        if (margin && layer == presentation_ui_layer_ && presentation_window_hidden(x, y))
+            continue;
         if (margin && ((outside_native && !scenery && !screen_overlay && !moved_window) ||
                        (outside_world && scenery && !screen_overlay && !(layer == 4 && presentation_robot_ending_))))
             continue;

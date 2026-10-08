@@ -41,6 +41,16 @@ class GameSession {
     PresentationFrame presentation_frame() const;
     std::span<const std::uint32_t, 256 * 224> native_pixels() const;
     void configure_presentation(unsigned width, bool identify_flashing_effects, bool direct_rendering = false);
+    // Second-display support. Tracking follows the source window list at any
+    // width; hiding omits those windows from a widescreen picture only.
+    void configure_window_display(bool tracked, bool hidden);
+    struct WindowRect {
+        int left{}, top{}, right{}, bottom{};
+        unsigned id{};
+    };
+    // Window-layer pixels inside tracked windows as of the last frame.
+    unsigned capture_windows(std::span<std::uint32_t, 256 * 224> pixels, std::span<WindowRect, 8> windows) const;
+    std::span<const std::uint8_t> work_ram() const;
     // Use owned sprite artwork after validated game content has been loaded.
     // This does not change the actor scheduler, animation cadence or input.
     void enable_host_sprite_resources(bool enabled = true);

@@ -191,6 +191,8 @@ std::shared_ptr<DirectSceneFrame> DirectSceneCapture::build(const SceneReadView 
                     }
                     if (world && !inside(native_x))
                         continue;
+                    if (bg == renderer.presentation_ui_layer_ && renderer.presentation_window_hidden(native_x, y))
+                        continue;
                     const int native_y = world ? int(y) - int(padding) : int(y);
                     const auto pixel = view.sample_background_pixel(
                         bg, native_x + (world ? shift : 0), unsigned(native_y + 1),
