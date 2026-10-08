@@ -293,6 +293,39 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
     ram[39374 + 95 + 14] = 0, ram[39374 + 2 * 95 + 16] = 0;
     screen.publish_party(ram);
 
+    // A meter's fraction turns the card's drums partway; a full meter stays put.
+    const auto meters = [&] { // inside Ness's card, clear of the animated backdrop
+        const auto canvas = render(screen);
+        std::vector<std::uint32_t> inside;
+        for (int y = 178; y < 226; ++y)
+            for (int x = 48; x < 110; ++x) inside.push_back(canvas[std::size_t(y) * eb::SecondScreen::width + std::size_t(x)]);
+        return inside;
+    };
+    const auto settled = meters();
+    ram[39374 + 68] = 128;
+    screen.publish_party(ram);
+    require(meters() != settled, "A rolling meter did not turn the card digits");
+    write(directory, "game_rolling", render(screen));
+    ram[39374 + 69] = 0xe7, ram[39374 + 70] = 0x03; // 999
+    screen.publish_party(ram);
+    const auto full = meters();
+    ram[39374 + 68] = 0;
+    screen.publish_party(ram);
+    require(meters() == full, "A meter at 999 rolled past its last digit");
+    ram[39374 + 69] = 76, ram[39374 + 70] = 0;
+    screen.publish_party(ram);
+    require(meters() == settled, "The card digits did not settle");
+
+    // Poo joins as the fourth card.
+    ram[39023 + 3] = 4, ram[39075] = 4;
+    for (int index = 0; "Poo"[index]; ++index) ram[39374 + 3 * 95 + std::size_t(index)] = std::uint8_t("Poo"[index] + 0x30);
+    ram[39374 + 3 * 95 + 5] = 12, ram[39374 + 3 * 95 + 10] = 120, ram[39374 + 3 * 95 + 69] = 120;
+    ram[39374 + 3 * 95 + 12] = 90, ram[39374 + 3 * 95 + 75] = 88;
+    screen.publish_party(ram);
+    write(directory, "game_four", render(screen));
+    ram[39023 + 3] = 0, ram[39075] = 3;
+    screen.publish_party(ram);
+
     // The title screen's attract mode runs with a blank party record.
     std::vector<std::uint8_t> blank(0x20000);
     blank[39023] = 1, blank[39075] = 1;
