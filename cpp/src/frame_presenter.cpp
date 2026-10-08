@@ -3,7 +3,7 @@
 // This layer draws completed pictures or immutable source scenes. It never
 // advances the game or changes the hardware framebuffer.
 
-#include <SDL_opengl.h>
+#include "gl_api.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -78,13 +78,10 @@ void FramePresenter::draw(std::span<const std::uint32_t> pixels, int source_widt
         texture_height_ = source_height;
     }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, source_width, source_height, GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
-    glBegin(GL_TRIANGLE_STRIP);
+    gl::begin_textured(false);
     // Source row zero is the top of the picture, opposite GL's screen origin.
-    glTexCoord2f(0, 1); glVertex2f(-1, -1);
-    glTexCoord2f(1, 1); glVertex2f(1, -1);
-    glTexCoord2f(0, 0); glVertex2f(-1, 1);
-    glTexCoord2f(1, 0); glVertex2f(1, 1);
-    glEnd();
+    gl::draw_strip({{{-1, -1, 0, 0, 1}, {1, -1, 0, 1, 1}, {-1, 1, 0, 0, 0}, {1, 1, 0, 1, 0}}});
+    gl::end_textured();
     if (glGetError() != GL_NO_ERROR) throw std::runtime_error("OpenGL framebuffer presentation failed");
 }
 
@@ -104,24 +101,26 @@ bool FramePresenter::begin_draw(int drawable_width, int drawable_height, double 
     glDepthMask(GL_TRUE);
     glStencilMask(255);
     glDisable(GL_STENCIL_TEST);
-    glDisable(GL_ALPHA_TEST);
+    gl::disable_alpha_test();
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glDisable(GL_DITHER);
     glDisable(GL_SCISSOR_TEST);
-    glEnable(GL_TEXTURE_2D);
+    gl::fixed_function_texture(true);
     glClearColor(0, 0, 0, 1);
-    glClearDepth(1);
+    gl::clear_depth(1);
     glClearStencil(0);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     // GL starts at the bottom: centering within game_height leaves the reserved
     // strip at the top, while the complete source texture remains in the quad.
     glViewport((drawable_width - view_width) / 2, (game_height - view_height) / 2, view_width, view_height);
+#ifndef EB_GLES
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glColor4f(1, 1, 1, 1);
+#endif
     return true;
 }
 
@@ -165,7 +164,7 @@ bool FramePresenter::draw_scene(const DirectScenePicture& picture, int drawable_
         scene_effects_->draw(picture, scene_texture_);
         return true;
     }
-    glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0);
+    gl::begin_textured(true);
     glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS);
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
@@ -210,14 +209,10 @@ bool FramePresenter::draw_scene(const DirectScenePicture& picture, int drawable_
                     v0 = texture_coordinate(float(quad.v) / scene.atlas_height);
         const float u1 = texture_coordinate(float(quad.u + quad.width) / scene.atlas_width),
                     v1 = texture_coordinate(float(quad.v + quad.height) / scene.atlas_height);
-        glBegin(GL_TRIANGLE_STRIP);
-        glTexCoord2f(u0,v1); glVertex3f(left,bottom,z);
-        glTexCoord2f(u1,v1); glVertex3f(right,bottom,z);
-        glTexCoord2f(u0,v0); glVertex3f(left,top,z);
-        glTexCoord2f(u1,v0); glVertex3f(right,top,z);
-        glEnd();
+        gl::draw_strip({{{left, bottom, z, u0, v1}, {right, bottom, z, u1, v1},
+                         {left, top, z, u0, v0}, {right, top, z, u1, v0}}});
     }
-    glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_ALPHA_TEST); glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST); gl::end_textured(); glDisable(GL_DEPTH_TEST);
     if (glGetError() != GL_NO_ERROR) throw std::runtime_error("OpenGL direct scene presentation failed");
     return true;
 }
@@ -267,7 +262,15 @@ FrameImage FramePresenter::capture() const {
     image.rgb.resize(row_bytes * drawable_height_);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadBuffer(GL_BACK);
+#ifdef EB_GLES
+    // ES only guarantees RGBA byte readback; drop alpha to keep PPM rows.
+    std::vector<std::uint8_t> rgba(std::size_t(drawable_width_) * drawable_height_ * 4);
+    glReadPixels(0, 0, drawable_width_, drawable_height_, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    for (std::size_t pixel = 0; pixel < rgba.size() / 4; ++pixel)
+        std::copy_n(rgba.begin() + pixel * 4, 3, image.rgb.begin() + pixel * 3);
+#else
     glReadPixels(0, 0, drawable_width_, drawable_height_, GL_RGB, GL_UNSIGNED_BYTE, image.rgb.data());
+#endif
     if (glGetError() != GL_NO_ERROR) throw std::runtime_error("OpenGL screenshot readback failed");
     // Convert bottom-up GL readback to the top-down rows used by PPM and tests.
     for (int row = 0; row < drawable_height_ / 2; ++row) {

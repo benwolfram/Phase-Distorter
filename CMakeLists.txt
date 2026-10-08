@@ -17,7 +17,8 @@ add_subdirectory(cpp)
 # A standalone install has a clearly named native application at its top level.
 # These are the application itself, not shell/batch wrappers. Keep cpp/'s bin/
 # installation as a compatibility path for existing development scripts.
-if(TARGET eb_cpp)
+# Android packages libmain.so through Gradle (android/), which copies the APK.
+if(TARGET eb_cpp AND NOT ANDROID)
     # Publish only after a successful build, including when eb_cpp was already
     # up to date. Stage the executable so an existing launcher can keep running.
     if(WIN32)

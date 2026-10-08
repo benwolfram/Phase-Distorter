@@ -1,0 +1,98 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The native game and SDL's Java glue must come from the same SDL release.
+// Fetch the pinned source archive once, before CMake or javac needs it.
+def sdlVersion = '2.32.10'
+def sdlSha256 = '5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165'
+def sdlParent = file("${rootDir}/build/third_party")
+def sdlDir = new File(sdlParent, "SDL2-${sdlVersion}")
+if (!new File(sdlDir, 'CMakeLists.txt').exists()) {
+    def archive = new File(sdlParent, "SDL2-${sdlVersion}.tar.gz")
+    sdlParent.mkdirs()
+    logger.lifecycle("Downloading SDL ${sdlVersion}")
+    new URL("https://github.com/libsdl-org/SDL/releases/download/release-${sdlVersion}/SDL2-${sdlVersion}.tar.gz")
+        .withInputStream { input -> archive.withOutputStream { it << input } }
+    def digest = java.security.MessageDigest.getInstance('SHA-256').digest(archive.bytes)
+        .encodeHex().toString()
+    if (digest != sdlSha256) {
+        archive.delete()
+        throw new GradleException("SDL archive checksum mismatch: ${digest}")
+    }
+    copy {
+        from tarTree(resources.gzip(archive))
+        into sdlParent
+    }
+}
+
+// Match the desktop release version, e.g. 0.2.1 -> versionCode 201.
+def releaseVersion = file('../../VERSION').text.trim()
+def versionParts = releaseVersion.tokenize('.').collect { it as int }
+
+android {
+    namespace 'io.github.therunaway5.phasedistorter'
+    compileSdk 35
+    ndkVersion '27.3.13750724'
+
+    defaultConfig {
+        applicationId 'io.github.therunaway5.phasedistorter'
+        minSdk 24
+        targetSdk 35
+        versionCode versionParts[0] * 10000 + versionParts[1] * 100 + versionParts[2]
+        versionName releaseVersion
+        ndk {
+            // The AYN Thor and other current handhelds are 64-bit ARM only.
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DEB_BUILD_TESTS=OFF',
+                          "-DEB_SDL2_SOURCE_DIR=${sdlDir}",
+                          '-DANDROID_STL=c++_shared'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Sideloaded builds are signed with the local debug key. Replace
+            // this with a real signing config before publishing to a store.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs += "${sdlDir}/android-project/app/src/main/java"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('../../CMakeLists.txt')
+            version '3.31.6'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        // SDL's upstream Java glue targets older APIs and is not ours to lint.
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+// Publish the release APK beside the desktop launchers, as refresh_launchers
+// does for Linux and Windows builds.
+tasks.register('refreshLauncher', Copy) {
+    dependsOn 'assembleRelease'
+    from layout.buildDirectory.file('outputs/apk/release/app-release.apk')
+    into file('../../launchers/android')
+    rename { 'Phase-Distorter.apk' }
+}

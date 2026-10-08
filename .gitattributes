@@ -9,3 +9,6 @@ launchers/linux/bin/eb_cpp binary
 *.vbs text eol=crlf
 *.png binary
 *.ico binary
+*.apk binary
+*.jar binary
+android/gradlew text eol=lf

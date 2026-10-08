@@ -103,7 +103,8 @@ Each v0.2.1 bundle includes `VERSION` and `PATCH-NOTES.md`.
 Download this repository as a ZIP and extract it, or clone it if you also want
 the full source snapshot. Keep the directory structure intact. The supplied
 native applications live in **`launchers/linux/bin/eb_cpp`** and
-**`launchers/windows/bin/eb_cpp.exe`**. Open the appropriate executable directly,
+**`launchers/windows/bin/eb_cpp.exe`**, with an Android APK in
+**`launchers/android/`**. Open the appropriate executable directly,
 or use `./launch.sh` on Linux or `launch.bat` on Windows; those scripts prefer a
 local build when one exists. Windows keeps `SDL2.dll` in the same `bin/` folder;
 Linux libraries and their notices live in `launchers/linux/lib/`.
@@ -175,6 +176,22 @@ and Windows embeds it in the executable.
 The application remembers the last game selected. The supplied native
 executables run the release snapshot. Source builds are separate; run
 their executable or install the build as described below.
+
+### Android (arm64, such as the AYN Thor)
+
+Install **`launchers/android/Phase-Distorter.apk`** by opening it on the device
+or with `adb install -r launchers/android/Phase-Distorter.apk`. The APK needs
+Android 7.0 or newer, a 64-bit ARM device and OpenGL ES 3.0. It is signed with a
+development key, so Android asks you to allow installs from unknown sources.
+
+The first launch opens the system file picker; choose your ROM or a zip
+containing it. The app has no menus of its own: cancelling the picker, choosing
+an unsupported ROM or any startup failure closes it. Later launches go straight
+into the game. The game fills a 16:9 screen and runs at up to 120 Hz on displays
+that support it. Packs, saves and settings live in
+`Android/data/io.github.therunaway5.phasedistorter/files/`;
+delete the `.ebpak` file there to pick a different ROM. Diagnostics go to
+`adb logcat -s PhaseDistorter`.
 
 ### Optional developer launch scripts
 
@@ -494,6 +511,26 @@ toolchain's runtime DLLs when launched outside its shell.
 If CMake cannot locate SDL2, add
 `-DSDL2_DIR="/path/to/SDL2/lib/cmake/SDL2"` to the configure command. Use SDL2
 libraries matching your compiler and architecture.
+
+### Android build
+
+Install the Android SDK command-line tools, then the matching packages:
+
+```sh
+sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724" "cmake;3.31.6"
+```
+
+Point `android/local.properties` at the SDK with `sdk.dir=/path/to/sdk`, or set
+`ANDROID_HOME`, and build with JDK 17 or newer:
+
+```sh
+cd android
+./gradlew refreshLauncher
+```
+
+The first build downloads and verifies the SDL 2.32.10 source archive. The
+native code is the same C++ tree, compiled for OpenGL ES 3.0. `refreshLauncher`
+copies the release APK to `launchers/android/Phase-Distorter.apk`.
 
 ### Optional installation of a source build
 

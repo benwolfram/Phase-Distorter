@@ -1,6 +1,6 @@
 #include "eb/scene_effects_renderer.hpp"
 #include <SDL.h>
-#include <SDL_opengl.h>
+#include "gl_api.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -15,10 +15,6 @@ template<class T> T proc(const char* name) {
     if (!value) throw std::runtime_error(std::string("Scene effects require OpenGL 2.1/FBO: ") + name);
     return value;
 }
-constexpr const char* vertex_source = R"GLSL(#version 120
-varying vec2 UV;
-void main() { gl_Position = ftransform(); UV = gl_MultiTexCoord0.xy; }
-)GLSL";
 const std::string window_source = R"GLSL(
 uniform sampler2D Windows;
 uniform vec2 ViewSize, ViewOrigin;
@@ -81,7 +77,7 @@ void texture_parameters() {
 }
 }
 struct SceneEffectsRenderer::Impl {
-#define GL_PROC(type, name) type name = proc<type>("gl" #name)
+#define GL_PROC EB_GL_PROC
     GL_PROC(PFNGLCREATESHADERPROC, CreateShader);
     GL_PROC(PFNGLSHADERSOURCEPROC, ShaderSource);
     GL_PROC(PFNGLCOMPILESHADERPROC, CompileShader);
@@ -138,9 +134,10 @@ struct SceneEffectsRenderer::Impl {
         return id;
     }
     Program program(const std::string& fragment) {
-        const auto frag = shader(GL_FRAGMENT_SHADER, fragment.c_str());
+        const auto source = gl::fragment_source(fragment);
+        const auto frag = shader(GL_FRAGMENT_SHADER, source.c_str());
         GLuint vert{};
-        try { vert = shader(GL_VERTEX_SHADER, vertex_source); }
+        try { vert = shader(GL_VERTEX_SHADER, gl::vertex_source()); }
         catch (...) { DeleteShader(frag); throw; }
         Program p; p.id = CreateProgram(); AttachShader(p.id, vert); AttachShader(p.id, frag);
         LinkProgram(p.id); DeleteShader(vert); DeleteShader(frag);
@@ -177,7 +174,7 @@ struct SceneEffectsRenderer::Impl {
             BindRenderbufferEXT(GL_RENDERBUFFER_EXT, 0);
             width = w; height = h;
         }
-        glDrawBuffer(GL_COLOR_ATTACHMENT0_EXT);
+        gl::use_color_attachment();
         FramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, images[0], 0);
         if (CheckFramebufferStatusEXT(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT)
             throw std::runtime_error("Scene effect framebuffer is incomplete");
@@ -189,13 +186,13 @@ struct SceneEffectsRenderer::Impl {
     }
     void cleanup(const GLint* viewport) {
         UseProgram(0); BindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
-        glDrawBuffer(GL_BACK); glReadBuffer(GL_BACK);
+        gl::use_back_buffer();
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         for (int unit : {2, 1}) {
-            ActiveTexture(GL_TEXTURE0 + unit); glBindTexture(GL_TEXTURE_2D, 0); glDisable(GL_TEXTURE_2D);
+            ActiveTexture(GL_TEXTURE0 + unit); glBindTexture(GL_TEXTURE_2D, 0); gl::fixed_function_texture(false);
         }
-        ActiveTexture(GL_TEXTURE0); glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_ALPHA_TEST); glDisable(GL_DEPTH_TEST);
+        ActiveTexture(GL_TEXTURE0); gl::fixed_function_texture(true); glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST); gl::disable_alpha_test(); glDisable(GL_DEPTH_TEST);
     }
 };
 
@@ -220,8 +217,8 @@ void SceneEffectsRenderer::draw(const DirectScenePicture& picture, unsigned atla
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 224, GL_RGBA, GL_UNSIGNED_BYTE, effect.windows.data());
         gl.ActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, atlas_texture);
         glViewport(0, 0, viewport[2], viewport[3]);
-        glDisable(GL_BLEND); glDisable(GL_ALPHA_TEST); glDisable(GL_DITHER);
-        glDepthMask(GL_TRUE); glStencilMask(255); glClearDepth(1); glClearStencil(0);
+        glDisable(GL_BLEND); gl::disable_alpha_test(); glDisable(GL_DITHER);
+        glDepthMask(GL_TRUE); glStencilMask(255); gl::clear_depth(1); glClearStencil(0);
         gl.common(gl.layer, scene, 0, 0); gl.Uniform1i(gl.GetUniformLocation(gl.layer.id, "Atlas"), 0);
         for (unsigned pass = 0; pass < 2; ++pass) {
             gl.FramebufferTexture2DEXT(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, gl.images[pass], 0);
@@ -254,14 +251,12 @@ void SceneEffectsRenderer::draw(const DirectScenePicture& picture, unsigned atla
                 const auto uv = [](float v) { return std::nextafter(v, std::numeric_limits<float>::infinity()); };
                 const float u0 = uv(float(quad.u) / scene.atlas_width), u1 = uv(float(quad.u + quad.width) / scene.atlas_width),
                             v0 = uv(float(quad.v) / scene.atlas_height), v1 = uv(float(quad.v + quad.height) / scene.atlas_height);
-                glBegin(GL_TRIANGLE_STRIP);
-                glTexCoord2f(u0, v1); glVertex3f(left, bottom, z); glTexCoord2f(u1, v1); glVertex3f(right, bottom, z);
-                glTexCoord2f(u0, v0); glVertex3f(left, top, z); glTexCoord2f(u1, v0); glVertex3f(right, top, z);
-                glEnd();
+                gl::draw_strip({{{left, bottom, z, u0, v1}, {right, bottom, z, u1, v1},
+                                 {left, top, z, u0, v0}, {right, top, z, u1, v0}}});
             }
         }
         glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_DEPTH_TEST);
-        gl.BindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0); glDrawBuffer(GL_BACK);
+        gl.BindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0); gl::use_back_buffer();
         glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         gl.ActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, gl.images[1]);
         gl.ActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, gl.images[0]);
@@ -272,10 +267,7 @@ void SceneEffectsRenderer::draw(const DirectScenePicture& picture, unsigned atla
         uniform("Clip", int(effect.clip)); uniform("Prevent", int(effect.prevent));
         gl.Uniform3f(gl.GetUniformLocation(gl.resolve.id, "Fixed"), effect.fixed[0], effect.fixed[1], effect.fixed[2]);
         gl.Uniform1f(gl.GetUniformLocation(gl.resolve.id, "Brightness"), effect.brightness);
-        glBegin(GL_TRIANGLE_STRIP);
-        glTexCoord2f(0, 0); glVertex2f(-1, -1); glTexCoord2f(1, 0); glVertex2f(1, -1);
-        glTexCoord2f(0, 1); glVertex2f(-1, 1); glTexCoord2f(1, 1); glVertex2f(1, 1);
-        glEnd();
+        gl::draw_strip({{{-1, -1, 0, 0, 0}, {1, -1, 0, 1, 0}, {-1, 1, 0, 0, 1}, {1, 1, 0, 1, 1}}});
         if (glGetError() != GL_NO_ERROR) throw std::runtime_error("OpenGL scene effect composition failed");
     } catch (...) { gl.cleanup(viewport); throw; }
     gl.cleanup(viewport);

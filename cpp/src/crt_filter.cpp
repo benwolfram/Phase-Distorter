@@ -1,7 +1,7 @@
 #include "eb/crt_filter.hpp"
 #include "crt_shader_source.hpp"
 #include <SDL.h>
-#include <SDL_opengl.h>
+#include "gl_api.hpp"
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,7 +15,7 @@ template<class T> T proc(const char* name) {
 }
 }
 struct CrtFilter::Impl {
-#define GL_PROC(type, name) type name = proc<type>("gl" #name)
+#define GL_PROC EB_GL_PROC
     GL_PROC(PFNGLCREATESHADERPROC, CreateShader);
     GL_PROC(PFNGLSHADERSOURCEPROC, ShaderSource);
     GL_PROC(PFNGLCOMPILESHADERPROC, CompileShader);
@@ -49,10 +49,10 @@ struct CrtFilter::Impl {
         return result;
     }
     void initialize() {
-        static constexpr char vertex[] = "#version 120\nvarying vec2 UV; void main(){gl_Position=ftransform(); UV=gl_MultiTexCoord0.xy;}";
-        const auto frag = shader(GL_FRAGMENT_SHADER, crt_oled_fragment);
+        const auto fragment = gl::fragment_source(crt_oled_fragment);
+        const auto frag = shader(GL_FRAGMENT_SHADER, fragment.c_str());
         GLuint vert{};
-        try { vert = shader(GL_VERTEX_SHADER, vertex); }
+        try { vert = shader(GL_VERTEX_SHADER, gl::vertex_source()); }
         catch (...) { DeleteShader(frag); throw; }
         program = CreateProgram(); AttachShader(program, vert); AttachShader(program, frag);
         LinkProgram(program); DeleteShader(vert); DeleteShader(frag);
@@ -81,7 +81,13 @@ void CrtFilter::draw(unsigned native_texture, int source_width, int source_heigh
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         if (gl.copy_width != viewport[2] || gl.copy_height != viewport[3]) {
+#ifdef EB_GLES
+            // ES copies require destination channels the window surface has;
+            // an opaque Android surface may have no alpha channel.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, viewport[2], viewport[3], 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+#else
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, viewport[2], viewport[3], 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+#endif
             gl.copy_width = viewport[2]; gl.copy_height = viewport[3];
         }
         glReadBuffer(GL_BACK);
@@ -92,12 +98,7 @@ void CrtFilter::draw(unsigned native_texture, int source_width, int source_heigh
     gl.Uniform1i(gl.GetUniformLocation(gl.program, "DirectScene"), direct_scene);
     gl.Uniform2f(gl.GetUniformLocation(gl.program, "RasterSize"), source_width, source_height);
     gl.Uniform2f(gl.GetUniformLocation(gl.program, "OutputSize"), viewport[2], viewport[3]);
-    glBegin(GL_TRIANGLE_STRIP);
-    glTexCoord2f(0, 1); glVertex2f(-1, -1);
-    glTexCoord2f(1, 1); glVertex2f(1, -1);
-    glTexCoord2f(0, 0); glVertex2f(-1, 1);
-    glTexCoord2f(1, 0); glVertex2f(1, 1);
-    glEnd();
+    gl::draw_strip({{{-1, -1, 0, 0, 1}, {1, -1, 0, 1, 1}, {-1, 1, 0, 0, 0}, {1, 1, 0, 1, 0}}});
     gl.UseProgram(0);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (glGetError() != GL_NO_ERROR) throw std::runtime_error("OpenGL CRT filter failed");

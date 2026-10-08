@@ -14,6 +14,7 @@
 #include "generated_assets.hpp"
 
 #include <SDL.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -23,6 +24,10 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 namespace eb {
 namespace {
@@ -34,12 +39,22 @@ constexpr int height = DisplaySettings::native_height;
 int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
     try {
         SDL_SetMainReady();
+#ifdef __ANDROID__
+        // Android/data/<package>/files: the launcher stores the imported pack
+        // here, and saves stay reachable over USB or a file manager.
+        const char *directory = SDL_AndroidGetExternalStoragePath();
+        if (!directory)
+            throw std::runtime_error(std::string("Cannot find application data directory: ") +
+                                     SDL_GetError());
+        const std::string preferences = std::string(directory) + "/";
+#else
         char *directory = SDL_GetPrefPath("ebsrc", "EarthBoundCpp");
         if (!directory)
             throw std::runtime_error(std::string("Cannot find application data directory: ") +
                                      SDL_GetError());
         const std::string preferences(directory);
         SDL_free(directory);
+#endif
         // Desktop runs remember preferences by default; deterministic headless
         // runs only read/write them when an explicit config path was supplied.
         if (!options.headless && !options.no_config && options.config.empty())
@@ -163,6 +178,23 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                 wait_for_presentation(deadline);
         };
 
+#ifdef __ANDROID__
+        // Android can kill a backgrounded game without delivering SDL_QUIT, so
+        // battery RAM is written shortly after the game changes it.
+        std::vector<std::uint8_t> flushed_save(session.save_memory().begin(), session.save_memory().end());
+        auto next_save_flush = start_time;
+        const auto flush_changed_save = [&] {
+            const auto now = std::chrono::steady_clock::now();
+            if (options.save.empty() || now < next_save_flush)
+                return;
+            next_save_flush = now + std::chrono::seconds(1);
+            const auto memory = session.save_memory();
+            if (std::ranges::equal(memory, flushed_save))
+                return;
+            store_save(options.save, memory);
+            flushed_save.assign(memory.begin(), memory.end());
+        };
+#endif
         int status = 0;
         try {
             for (;;) {
@@ -246,6 +278,9 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                 drain_audio();
                 presentation.simulation_finished(session.presentation_frame(), completed_frames,
                                                  std::chrono::steady_clock::now());
+#ifdef __ANDROID__
+                flush_changed_save();
+#endif
                 present_and_wait();
             }
         } catch (const std::exception &error) {
@@ -348,7 +383,50 @@ int run_application(int argc, char **argv) {
 
 } // namespace eb
 
-#ifndef _WIN32
+#if defined(__ANDROID__)
+namespace {
+// Android discards stdout/stderr. Forward complete lines to logcat so
+// `adb logcat -s PhaseDistorter` shows the same diagnostics as a terminal.
+class LogcatBuffer : public std::streambuf {
+  public:
+    explicit LogcatBuffer(android_LogPriority priority) : priority_(priority) {}
+
+  protected:
+    int overflow(int character) override {
+        if (character == traits_type::eof() || character == '\n')
+            flush_line();
+        else
+            line_.push_back(char(character));
+        return traits_type::not_eof(character);
+    }
+    int sync() override {
+        flush_line();
+        return 0;
+    }
+
+  private:
+    void flush_line() {
+        if (line_.empty()) return;
+        __android_log_write(priority_, "PhaseDistorter", line_.c_str());
+        line_.clear();
+    }
+    android_LogPriority priority_;
+    std::string line_;
+};
+} // namespace
+
+extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char **argv) {
+    static LogcatBuffer output(ANDROID_LOG_INFO), errors(ANDROID_LOG_ERROR);
+    std::cout.rdbuf(&output);
+    std::cerr.rdbuf(&errors);
+    // cerr flushes after every insertion; keep each message on one log line.
+    std::cerr.unsetf(std::ios::unitbuf);
+    const int status = eb::run_application(argc, argv);
+    std::cout.flush();
+    std::cerr.flush();
+    return status;
+}
+#elif !defined(_WIN32)
 int main(int argc, char **argv) {
     return eb::run_application(argc, argv);
 }
