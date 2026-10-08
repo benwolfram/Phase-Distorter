@@ -273,20 +273,28 @@ std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
         taps_.pop_front();
         return 0;
     }
-    if (tap.button) {
-        tap.confirming = true;
-        return press(tap.button, 0);
-    }
-    if (tap.window < 0) {
-        tap.confirming = true;
-        return press(button_b, 0);
-    }
     const auto word = [&](std::size_t at) { return unsigned(ram[at] | ram[at + 1] << 8); };
     const auto record = [&](unsigned id) -> std::optional<std::size_t> {
         const unsigned slot = id < 53 ? word(open_window_table + id * 2) : 0xffff;
         if (slot >= 8) return std::nullopt;
         return window_stats + slot * window_size;
     };
+    if (tap.button) {
+        // A field shortcut waits for a clear field and a step for its target
+        // window, so a quick double tap never reaches into what opened.
+        bool open = false;
+        for (unsigned id = 0; id < 53 && !open; ++id) open = record(id).has_value();
+        if (tap.window < 0 ? open : !record(unsigned(tap.window))) {
+            taps_.pop_front();
+            return 0;
+        }
+        tap.confirming = true;
+        return press(tap.button, 6);
+    }
+    if (tap.window < 0) {
+        tap.confirming = true;
+        return press(button_b, 0);
+    }
     const auto target_record = record(unsigned(tap.window));
     if (!target_record) {
         taps_.pop_front();
@@ -489,6 +497,7 @@ void SecondScreen::tap_game(int x, int y) {
             ((x >= window.left - target_arrow_w - 2 && x < window.left) ||
              (x >= window.right && x < window.right + target_arrow_w + 2))) {
             tap.button = x < window.left ? button_left : button_right;
+            tap.window = int(battle_target);
             if (taps_.size() < 16) taps_.push_back(tap);
             return;
         }

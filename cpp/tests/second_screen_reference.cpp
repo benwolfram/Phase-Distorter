@@ -245,9 +245,17 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
         for (const auto [x, button] : {std::pair{27 + 100 - 9, std::uint16_t(0x0200)},
                                        std::pair{27 + 220 + 9, std::uint16_t(0x0100)}}) {
             Menu menu;
+            menu.put(0x88e4 + 49 * 2, 1);
             tap(screen, x, 6 + 50);
             menu.run(screen);
             require(menu.presses == std::vector<std::uint16_t>{button}, "A target step box did not press its direction");
+        }
+        {
+            // The target window closed before the step ran.
+            Menu menu;
+            tap(screen, 27 + 220 + 9, 6 + 50);
+            menu.run(screen);
+            require(menu.presses.empty(), "A target step pressed after its window closed");
         }
         screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()),
                                std::span<const eb::SecondScreen::Window>(&window, 1));
@@ -297,9 +305,17 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
     screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()), {});
     for (const auto [x, button] : {std::pair{79, std::uint16_t(0x0080)}, std::pair{155, std::uint16_t(0x0020)}}) {
         Menu menu;
+        menu.put(0x88e4 + 2, 0xffff);
         tap(screen, x, 154);
         menu.run(screen);
         require(menu.presses == std::vector<std::uint16_t>{button}, "A field shortcut did not press its button");
+    }
+    {
+        // A second quick tap finds the command window the first one opened.
+        Menu menu;
+        tap(screen, 79, 154);
+        menu.run(screen);
+        require(menu.presses.empty(), "A field shortcut pressed into an open window");
     }
     write(directory, "game_field", render(screen));
     ram[0x9643] = 1;
