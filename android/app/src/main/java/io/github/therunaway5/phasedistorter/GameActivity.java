@@ -83,14 +83,14 @@ public class GameActivity extends SDLActivity {
         int gameDisplay = getWindowManager().getDefaultDisplay().getDisplayId();
         Display target = null;
         for (Display display : displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)) {
-            if (display.getDisplayId() != gameDisplay && display.getDisplayId() != Display.DEFAULT_DISPLAY) {
+            if (companionPanel(display, gameDisplay)) {
                 target = display;
                 break;
             }
         }
         if (target == null) {
             for (Display display : displayManager.getDisplays()) {
-                if (display.getDisplayId() != gameDisplay && display.getDisplayId() != Display.DEFAULT_DISPLAY) {
+                if (companionPanel(display, gameDisplay)) {
                     target = display;
                     break;
                 }
@@ -116,6 +116,23 @@ public class GameActivity extends SDLActivity {
             secondScreen = null;
             detachSecondScreen();
         }
+    }
+
+    // Only a panel built into the handheld takes the windows. A TV over HDMI,
+    // a cast or a screen recorder's display is out of reach of touch, so the
+    // game stays single-screen with its windows on top.
+    private static boolean companionPanel(Display display, int gameDisplay) {
+        if (display.getDisplayId() == gameDisplay || display.getDisplayId() == Display.DEFAULT_DISPLAY) return false;
+        if ((display.getFlags() & Display.FLAG_PRIVATE) != 0) return false;
+        try {
+            // Display.getType() is hidden; 1 is Display.TYPE_INTERNAL.
+            Object type = Display.class.getMethod("getType").invoke(display);
+            if (type instanceof Integer) return (Integer) type == 1;
+        } catch (Throwable error) {
+            Log.w(TAG, "Display type unavailable", error);
+        }
+        // Without the type, a presentation-only display is an external one.
+        return (display.getFlags() & Display.FLAG_PRESENTATION) == 0;
     }
 
     private void dismissSecondScreen() {
