@@ -198,8 +198,10 @@ void GameSceneRenderer::resize_presentation_width(const SceneReadView &view, uns
 
 std::span<const uint32_t>
 GameSceneRenderer::presentation_pixels(std::span<const uint32_t, 256 * 224> native) const {
-    return presentation_width_ == 256 ? std::span<const uint32_t>(native)
-                                      : std::span<const uint32_t>(presentation_framebuffer_);
+    if (presentation_width_ == 256)
+        return presentation_hidden_frame_ ? std::span<const uint32_t>(presentation_hidden_framebuffer_)
+                                          : std::span<const uint32_t>(native);
+    return std::span<const uint32_t>(presentation_framebuffer_);
 }
 
 double GameSceneRenderer::presentation_fixed_aspect() const { return presentation_frame_aspect_; }
@@ -1290,8 +1292,30 @@ void GameSceneRenderer::prepare_presentation_effects(const SceneReadView &view) 
 // When a boundary shifts scenery, recomposition affects the presentation copy
 // alone. Sprite sampling is const, preserving the canonical overflow flags.
 void GameSceneRenderer::render_presentation_margins(const SceneReadView &view, unsigned y) {
-    if (presentation_width_ == 256)
+    if (presentation_width_ == 256) {
+        if (!y) {
+            presentation_hidden_frame_ = presentation_hide_windows_;
+            if (presentation_hidden_frame_) presentation_hidden_framebuffer_.resize(256 * 224);
+        }
+        if (!presentation_hidden_frame_)
+            return;
+        auto output = presentation_hidden_framebuffer_.begin() + y * 256;
+        std::copy_n(view.native_framebuffer.begin() + y * 256, 256, output);
+        if (view.ppu_registers[0] & 0x80)
+            return;
+        bool covered = false;
+        for (unsigned index = 0; index < presentation_ui_window_count_; ++index)
+            covered |= presentation_ui_windows_[index].contains(presentation_ui_windows_[index].left, int(y));
+        if (!covered)
+            return;
+        std::array<Pixel, 256> objects{};
+        if ((view.ppu_registers[0x2c] | view.ppu_registers[0x2d]) & 16)
+            view.sample_sprite_pixels(y, objects, 0);
+        for (unsigned x = 0; x < 256; ++x)
+            if (presentation_window_hidden(int(x), y))
+                output[x] = compose_presentation_pixel(view, int(x), y, objects[x], true);
         return;
+    }
     const unsigned margin = (presentation_width_ - 256) / 2;
     auto output = presentation_framebuffer_.begin() + y * presentation_width_;
     std::copy_n(view.native_framebuffer.begin() + y * 256, 256, output + margin);

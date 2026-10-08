@@ -4,13 +4,17 @@
 #include "eb/second_screen.hpp"
 #include "generated_assets.hpp"
 #include "generated_profile.hpp"
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
+#include <utility>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -25,9 +29,54 @@ void tap(eb::SecondScreen &screen, int x, int y) {
 
 std::vector<std::uint32_t> render(eb::SecondScreen &screen) {
     std::vector<std::uint32_t> canvas(std::size_t(eb::SecondScreen::width) * eb::SecondScreen::height);
-    screen.render(std::span<std::uint32_t, eb::SecondScreen::width * eb::SecondScreen::height>(canvas));
-    return canvas;
+    // An unchanged page skips drawing until the backdrop's next 30 Hz step.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        if (screen.render(std::span<std::uint32_t, eb::SecondScreen::width * eb::SecondScreen::height>(canvas)))
+            return canvas;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    throw std::runtime_error("The page never redrew");
 }
+
+// A two-by-two menu in window 1, as WINDOW_STATS and the option pool hold it,
+// whose cursor answers the joypad like the game's.
+struct Menu {
+    std::vector<std::uint8_t> ram = std::vector<std::uint8_t>(0x20000);
+    int column{}, line{};
+    std::vector<std::uint16_t> presses;
+    void put(std::size_t at, unsigned value) { ram[at] = std::uint8_t(value), ram[at + 1] = std::uint8_t(value >> 8); }
+    explicit Menu(bool options = true) {
+        for (std::size_t id = 0; id < 53; ++id) put(0x88e4 + id * 2, 0xffff);
+        put(0x88e4 + 2, 0); // window 1 in slot 0
+        put(0x8958, 1);
+        put(0x8650 + 43, options ? 0 : 0xffff);
+        for (unsigned index = 0; index < 4; ++index) {
+            const std::size_t at = 0x89d4 + index * 45;
+            put(at, 1);
+            put(at + 2, index < 3 ? index + 1 : 0xffff);
+            put(at + 8, index % 2 * 8);
+            put(at + 10, index / 2);
+        }
+        sync();
+    }
+    void sync() { put(0x8650 + 14, unsigned(column + 1)), put(0x8650 + 16, unsigned(line)); }
+    // Runs until the tap queue drains, moving the cursor on each new press.
+    void run(eb::SecondScreen &screen) {
+        std::uint16_t previous = 0;
+        for (int frame = 0; frame < 600; ++frame) {
+            const auto buttons = screen.drive_input(ram);
+            if (buttons && buttons != previous) {
+                presses.push_back(buttons);
+                if (buttons == 0x0800) line = 0;
+                if (buttons == 0x0400) line = 1;
+                if (buttons == 0x0200) column = 0;
+                if (buttons == 0x0100) column = 8;
+                sync();
+            }
+            previous = buttons;
+        }
+    }
+};
 
 void write(const std::filesystem::path &directory, const std::string &name, const std::vector<std::uint32_t> &canvas) {
     if (directory.empty()) return;
@@ -131,11 +180,91 @@ void run(const eb::GameAssets &assets, const std::filesystem::path &directory) {
         tap(screen, 250, 250);
     }
 
+    // Game page taps. Window 1 sits at native (16, 16); its text starts one
+    // tile in, on lines 16 pixels apart, and the page offsets it by (27, 6).
+    tap(screen, 50, 250);
+    const std::vector<std::uint32_t> pixels(256 * 224, 0xff000000u);
+    const eb::SecondScreen::Window window{16, 16, 176, 64, 1};
+    screen.publish_windows(std::span<const std::uint32_t, 256 * 224>(pixels.data(), pixels.size()),
+                           std::span<const eb::SecondScreen::Window>(&window, 1));
+    const auto cell = [](int column, int line) { return std::pair{27 + 16 + 8 + column * 8 + 3, 6 + 16 + 8 + line * 16 + 4}; };
+    {
+        Menu menu;
+        const auto [x, y] = cell(10, 1); // inside the second option of the second line
+        tap(screen, x, y);
+        menu.run(screen);
+        require(menu.column == 8 && menu.line == 1 && !menu.presses.empty() && menu.presses.back() == 0x0080,
+                "A menu tap did not walk the cursor to its option and confirm");
+        tap(screen, 5, 5); // outside every window
+        menu.presses.clear();
+        menu.run(screen);
+        require(menu.presses == std::vector<std::uint16_t>{0x8000}, "A tap outside the windows did not press B");
+    }
+    {
+        // Quick taps queue in order, like letters on the naming keyboard.
+        Menu menu;
+        const auto [x1, y1] = cell(9, 0);
+        const auto [x2, y2] = cell(1, 1);
+        tap(screen, x1, y1);
+        tap(screen, x2, y2);
+        menu.run(screen);
+        std::vector<std::pair<int, int>> confirmed;
+        menu.column = 0, menu.line = 0;
+        for (const auto press : menu.presses) {
+            if (press == 0x0800) menu.line = 0;
+            if (press == 0x0400) menu.line = 1;
+            if (press == 0x0200) menu.column = 0;
+            if (press == 0x0100) menu.column = 8;
+            if (press == 0x0080) confirmed.emplace_back(menu.column, menu.line);
+        }
+        require(confirmed == std::vector<std::pair<int, int>>{{8, 0}, {0, 1}}, "Queued taps did not confirm in order");
+    }
+    {
+        // A text window without options just takes A.
+        Menu menu(false);
+        const auto [x, y] = cell(3, 0);
+        tap(screen, x, y);
+        menu.run(screen);
+        require(menu.presses == std::vector<std::uint16_t>{0x0080}, "A text window tap did not press A");
+    }
+    {
+        // Cancelling drops a tap mid-walk, as the pad or a loaded state does.
+        Menu menu;
+        const auto [x, y] = cell(10, 1);
+        tap(screen, x, y);
+        screen.cancel_input();
+        menu.run(screen);
+        require(menu.presses.empty(), "A cancelled tap still pressed buttons");
+    }
+    write(directory, "game_windows", render(screen));
+
+    // In a battle the backdrop becomes the fight's own background; the
+    // Coil Snake's group 3 uses a different layer from every choice above.
+    const auto top_colors = [&] {
+        const auto canvas = render(screen);
+        return std::set<std::uint32_t>(canvas.begin(), canvas.begin() + eb::SecondScreen::width * 8);
+    };
+    const auto calm = top_colors();
+    ram[0x9643] = 1, ram[0x4a8c] = 3;
+    screen.publish_party(ram);
+    const auto battle = top_colors();
+    require(battle.size() >= 4 && battle != calm, "The battle backdrop did not replace the chosen one");
+    write(directory, "game_battle", render(screen));
+    ram[0x9643] = 0;
+    screen.publish_party(ram);
+
+    // The title screen's attract mode runs with a blank party record.
+    std::vector<std::uint8_t> blank(0x20000);
+    blank[39023] = 1, blank[39075] = 1;
+    screen.publish_party(blank);
+    write(directory, "game_blank", render(screen));
+    screen.publish_party(ram);
+
     screen.show_message("State saved");
     tap(screen, 50, 250);
     write(directory, "game_message", render(screen));
     require(!render(screen).empty(), "Render failed");
-    std::cout << "PASS " << assets.title << ": second screen tabs, states, settings and messages\n";
+    std::cout << "PASS " << assets.title << ": second screen tabs, states, settings, taps, battles and messages\n";
 }
 } // namespace
 

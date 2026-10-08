@@ -67,6 +67,8 @@ LaunchOptions parse_options(int argc, char **argv) {
                          "  --gl-screenshot FILE  Read back the final OpenGL image as PPM\n"
                          "  --second-screen-screenshot FILE  Write the handheld second-panel picture as PPM\n"
                          "  --second-screen-tab TAB  game, states, or settings for that capture\n"
+                         "  --second-screen-tap F:X:Y  Tap the second panel at X,Y on frame F (repeatable)\n"
+                         "  --debug-battle N   Start enemy group N's battle once the party can move\n"
                          "  --save FILE        Load and save the 8 KiB battery RAM file\n"
                          "  --no-save          Disable automatic desktop save persistence\n"
                          "  --wav FILE         Record DSP output as 32 kHz stereo PCM WAV\n"
@@ -186,6 +188,21 @@ LaunchOptions parse_options(int argc, char **argv) {
             else if (tab == "states") options.second_screen_tab = 1;
             else if (tab == "settings") options.second_screen_tab = 2;
             else throw std::runtime_error("--second-screen-tab must be game, states, or settings");
+        }
+        else if (arg == "--second-screen-tap") {
+            const std::string value = next();
+            const auto first = value.find(':'), second = value.find(':', first == std::string::npos ? first : first + 1);
+            if (first == std::string::npos || second == std::string::npos)
+                throw std::runtime_error("--second-screen-tap must be FRAME:X:Y");
+            options.second_screen_taps.push_back({parse_unsigned_integer(value.substr(0, first), arg),
+                                                  int(parse_unsigned_integer(value.substr(first + 1, second - first - 1), arg)),
+                                                  int(parse_unsigned_integer(value.substr(second + 1), arg))});
+        }
+        else if (arg == "--debug-battle") {
+            const auto group = parse_unsigned_integer(next(), arg);
+            if (group == 0 || group > 483)
+                throw std::runtime_error("--debug-battle must be an enemy group from 1 to 483");
+            options.debug_battle = unsigned(group);
         }
         else if (arg == "--save")
             options.save = next();

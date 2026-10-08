@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <deque>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -23,7 +25,8 @@ public:
     static constexpr int thumbnail_width = 128, thumbnail_height = 112;
     static constexpr int backdrop_count = 8;
 
-    struct Window { int left{}, top{}, right{}, bottom{}; };
+    // Native pixels, border included; id is the game's window ID.
+    struct Window { int left{}, top{}, right{}, bottom{}; unsigned id{}; };
     struct Snapshot {
         std::string id;
         std::int64_t created_at_unix{};
@@ -54,6 +57,12 @@ public:
     void publish_settings(const Settings &settings);
     void show_message(std::string message);
     std::vector<Command> take_commands();
+    // Joypad bits that Game page taps hold for the coming frame. A tap on
+    // a menu option walks the game's own cursor there and confirms it; a
+    // tap elsewhere in a window presses A, and outside every window B.
+    std::uint16_t drive_input(std::span<const std::uint8_t> work_ram);
+    // Drops a tap in progress, for example after loading a state.
+    void cancel_input();
     // Whether the Game page is up to show text windows; while another page
     // is open the windows stay on the main screen.
     bool showing_windows() const;
@@ -85,7 +94,7 @@ private:
 
     // Decoding.
     void decode_font(std::span<const std::uint8_t> image, int index);
-    void decode_backdrop(std::span<const std::uint8_t> image, int slot, int layer);
+    Backdrop decode_backdrop(std::span<const std::uint8_t> image, int layer) const;
 
     // Drawing primitives.
     std::uint32_t frame_color(int index) const;
@@ -104,6 +113,7 @@ private:
     void draw_settings(Canvas canvas) const;
     void draw_tabs(Canvas canvas) const;
     void activate(int id);
+    void tap_game(int x, int y);
     std::string setting_value(int row) const;
 
     mutable std::mutex mutex_;
@@ -111,6 +121,11 @@ private:
     std::vector<std::uint8_t> window_tiles_;
     std::vector<std::uint16_t> flavour_palettes_;
     std::array<Backdrop, backdrop_count> backdrops_;
+    // During a battle the panel takes the fight's own first background layer.
+    std::vector<std::uint8_t> image_;
+    Backdrop battle_backdrop_;
+    int battle_layer_ = -1; // game thread only; the layer battle_backdrop_ holds
+    bool in_battle_{};
 
     std::vector<std::uint32_t> windows_pixels_ = std::vector<std::uint32_t>(256 * 224);
     std::vector<Window> windows_;
@@ -120,6 +135,19 @@ private:
     std::vector<Snapshot> snapshots_;
     Settings settings_;
     std::vector<Command> commands_;
+
+    // A Game page tap, resolved against WINDOW_STATS on the game thread.
+    struct Tap {
+        int window = -1;      // game window ID, -1 outside every window
+        int column{}, line{}; // text cell under the tap
+        int frames{}, moves{}, backs{}, stable{}, hold{}, rest{};
+        int last_column = -1, last_line = -1, from_column = -1, from_line = -1, direction = -1;
+        std::array<int, 4> failures{};
+        std::uint16_t held{}, then{}; // then: a final press after held
+        bool probing{}, confirming{};
+    };
+    std::deque<Tap> taps_; // in order, so quick taps on the keyboard spell a name
+    int touch_x_ = -1, touch_y_ = -1;
 
     Tab tab_ = Tab::Game;
     int page_{}, selected_ = -1, pressed_ = -1, confirm_delete_ = -1;

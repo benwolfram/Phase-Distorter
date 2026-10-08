@@ -4,6 +4,7 @@
 #include "eb/game_version.hpp"
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace eb {
 struct LaunchOptions {
@@ -48,6 +49,11 @@ struct LaunchOptions {
     // Headless capture of the handheld second-panel picture, and its tab.
     std::string second_screen_screenshot;
     int second_screen_tab = 0;
+    // Scripted second-panel taps at logical panel coordinates.
+    struct SecondScreenTap { std::uint64_t frame{}; int x{}, y{}; };
+    std::vector<SecondScreenTap> second_screen_taps;
+    // Debug: start this enemy group's battle once the party can move.
+    unsigned debug_battle = 0;
     std::string assets;
     std::string import_rom;
     std::string config;

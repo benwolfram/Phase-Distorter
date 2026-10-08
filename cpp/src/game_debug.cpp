@@ -2,6 +2,7 @@
 #include "eb/snes_bus.hpp"
 #include "eb/main_cpu_65816.hpp"
 #include "eb/snapshot_archive.hpp"
+#include "eb/game/runtime/runtime.hpp"
 #include "generated_profile.hpp"
 #include <algorithm>
 #include <stdexcept>
@@ -69,7 +70,8 @@ void GameDebug::snapshot_io(SnapshotArchive &archive) {
     if (pending) {
         archive(pending_request_->kind, pending_request_->destination, pending_request_->party);
         if (archive.loading() && pending_request_->kind != GameDebugRequest::Kind::Teleport &&
-            pending_request_->kind != GameDebugRequest::Kind::Party)
+            pending_request_->kind != GameDebugRequest::Kind::Party &&
+            pending_request_->kind != GameDebugRequest::Kind::Battle)
             throw std::runtime_error("Invalid snapshot debug request");
     }
     bool suspended = bool(suspended_call_);
@@ -84,7 +86,7 @@ void GameDebug::snapshot_io(SnapshotArchive &archive) {
                 call.status_register, call.data_bank, call.program_counter, call.continuation);
         if (archive.loading() && (call.program_counter > 0xffffff ||
             (call.continuation != CallContinuation::PartyChange && call.continuation != CallContinuation::FadeOut &&
-             call.continuation != CallContinuation::BlackFrame)))
+             call.continuation != CallContinuation::BlackFrame && call.continuation != CallContinuation::Battle)))
             throw std::runtime_error("Invalid suspended snapshot debug call");
     }
     bool teleport = bool(active_teleport_);
@@ -258,6 +260,11 @@ void GameDebug::request(GameDebugRequest request) {
         status_ = "Keep at least one playable party member.";
         return;
     }
+    // ENEMY_GROUP_001..483 in battle_groups_table.asm.
+    if (request.kind == GameDebugRequest::Kind::Battle && (request.destination == 0 || request.destination > 483)) {
+        status_ = "Unknown enemy group.";
+        return;
+    }
     pending_request_ = request;
     party_attempts_ = 0;
     status_ = "Waiting for free movement; close dialogue or finish the battle.";
@@ -331,6 +338,11 @@ void GameDebug::before_step() {
         case CallContinuation::BlackFrame:
             start_teleport();
             break;
+        case CallContinuation::Battle:
+            pending_request_.reset();
+            status_ = "Battle finished.";
+            refresh_stats();
+            break;
         }
         return;
     }
@@ -344,6 +356,15 @@ void GameDebug::before_step() {
     if (!pending_request_ || !can_apply_world_action()) return;
     if (pending_request_->kind == GameDebugRequest::Kind::Party) {
         advance_party_change();
+    } else if (pending_request_->kind == GameDebugRequest::Kind::Battle) {
+        // INIT_BATTLE_SCRIPTED, as the [1F 23] text command calls it: the
+        // original loads the group, swirls, fights and restores the map.
+        const auto routines = game::runtime::ported_routines(bus_.game_version());
+        const auto routine = std::find_if(routines.begin(), routines.end(),
+            [](const auto &candidate) { return candidate.source == "src/battle/init_scripted.asm"; });
+        if (routine == routines.end()) { pending_request_.reset(); status_ = "Battles are unavailable."; return; }
+        call_game_routine(routine->first_address, pending_request_->destination, 0, 0, CallContinuation::Battle);
+        status_ = "Battle in progress...";
     } else {
         // FADE_OUT_WITH_MOSAIC with Y=0 is the game's ordinary blocking fade:
         // one brightness step per frame, no mosaic. Do not publish a teleport

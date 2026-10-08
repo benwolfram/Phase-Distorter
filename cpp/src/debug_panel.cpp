@@ -31,6 +31,7 @@ struct DebugPanel::Impl {
     std::array<bool,4> party{};
     bool party_editing{};
     unsigned destination{};
+    int battle_group = 3;
     ImGuiTextFilter destination_filter;
     std::optional<PanelAction> action, confirmation;
     unsigned confirmation_cache{};
@@ -352,8 +353,15 @@ void DebugPanel::draw(DisplaySettings& settings, const DebugDiagnostics& diagnos
                         impl_->party_editing=false;
                     }
                     ImGui::EndDisabled();
-                    ImGui::EndDisabled();
                     ImGui::TextWrapped("Keep at least one playable member. Guest companions stay with the party.");
+                    ImGui::SeparatorText("Battle");
+                    ImGui::SetNextItemWidth(120);
+                    ImGui::InputInt("Enemy group",&impl_->battle_group);
+                    impl_->battle_group=std::clamp(impl_->battle_group,1,483);
+                    ImGui::SameLine();
+                    if(ImGui::Button("Start battle"))
+                        impl_->game_action=GameDebugRequest{GameDebugRequest::Kind::Battle,unsigned(impl_->battle_group),{}};
+                    ImGui::EndDisabled();
                     if(!state.status.empty())ImGui::TextWrapped("%s",state.status.c_str());
                     else if(!state.ready)ImGui::TextWrapped("Load a game to use teleport and party controls.");
                     ImGui::TextWrapped("Debug changes can affect saved progress. Cheat switches reset when you restart or switch games.");

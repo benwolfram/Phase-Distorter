@@ -22,8 +22,8 @@ inline std::span<const DebugDestination> debug_destinations() {
     return places;
 }
 struct GameDebugRequest {
-    enum class Kind { Teleport, Party } kind;
-    unsigned destination{};
+    enum class Kind { Teleport, Party, Battle } kind;
+    unsigned destination{}; // battle: enemy group
     std::array<bool,4> party{};
 };
 struct GameDebugSnapshot {
@@ -56,7 +56,7 @@ private:
     std::string status_;
     std::array<std::array<unsigned,2>,4> original_max_{};
     std::array<std::array<bool,2>,4> captured_max_{};
-    enum class CallContinuation { PartyChange, FadeOut, BlackFrame };
+    enum class CallContinuation { PartyChange, FadeOut, BlackFrame, Battle };
     struct SavedMainCpuRegisters {
         std::uint16_t accumulator, x_index, y_index, stack_pointer, direct_page;
         std::uint8_t status_register, data_bank;

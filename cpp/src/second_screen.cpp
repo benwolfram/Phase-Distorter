@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <stdexcept>
 #include <utility>
@@ -15,14 +16,25 @@ constexpr std::size_t font_table = 0x03F054;
 constexpr std::size_t window_graphics = 0x200000;
 constexpr std::size_t flavour_palettes = 0x201FC8;
 constexpr std::size_t battle_graphics = 0x0AD7A1, battle_arrangements = 0x0AD93D,
-                      battle_palettes = 0x0ADAD9, battle_layers = 0x0ADCA1;
+                      battle_palettes = 0x0ADAD9, battle_layers = 0x0ADCA1, battle_group_layers = 0x0BD89A;
+constexpr int battle_group_count = 484, battle_layer_count = 327;
 constexpr int flavour_count = 7, highlight_flavour = 3;
 // Battle background layers chosen for calm, tileable patterns.
 constexpr std::array<int, SecondScreen::backdrop_count> backdrop_layers{22, 43, 23, 40, 53, 45, 35, 57};
 
 // WRAM, US.
 constexpr std::size_t party_members = 39023, party_count = 39075, character_table = 39374,
-                      character_size = 95, money = 0x9831, text_flavour = 0x99CD;
+                      character_size = 95, money = 0x9831, text_flavour = 0x99CD,
+                      battle_mode = 0x9643, battle_group = 0x4A8C;
+// WINDOW_STATS, OPEN_WINDOW_TABLE, CURRENT_FOCUS_WINDOW and the menu option
+// pool, with window_stats and menu_option field offsets (ebsrc structs.asm).
+constexpr std::size_t window_stats = 0x8650, window_size = 82, open_window_table = 0x88e4,
+                      focus_window = 0x8958, option_pool = 0x89d4, option_size = 45, option_count = 70;
+constexpr unsigned naming_keyboard = 28; // window ID of the name entry grid
+constexpr std::size_t stat_text_x = 14, stat_text_y = 16, stat_first_option = 43, stat_page = 51;
+constexpr std::size_t option_flags = 0, option_next = 2, option_page = 6, option_x = 8, option_y = 10;
+constexpr std::uint16_t button_a = 0x0080, button_b = 0x8000, button_up = 0x0800, button_down = 0x0400,
+                        button_left = 0x0200, button_right = 0x0100;
 
 // Window tiles: 0x10 corner, 0x11 horizontal edge, 0x12 vertical edge,
 // 0x03 solid interior, 0x20/0x30 rolling-digit tops/bottoms.
@@ -88,7 +100,7 @@ SecondScreen *hub_screen{};
 std::atomic<bool> hub_attached{};
 } // namespace
 
-SecondScreen::SecondScreen(std::span<const std::uint8_t> image, GameVersion version) {
+SecondScreen::SecondScreen(std::span<const std::uint8_t> image, GameVersion version) : image_(image.begin(), image.end()) {
     if (!supported(version)) throw std::runtime_error("The second screen supports EarthBound (US) only");
     for (int index = 0; index < int(fonts_.size()); ++index) decode_font(image, index);
     window_tiles_ = native::decompress_content(image, window_graphics, 0x4000);
@@ -97,9 +109,9 @@ SecondScreen::SecondScreen(std::span<const std::uint8_t> image, GameVersion vers
         flavour_palettes_.push_back(std::uint16_t(palettes[index] | palettes[index + 1] << 8));
     for (int slot = 0; slot < backdrop_count; ++slot) {
         try {
-            decode_backdrop(image, slot, backdrop_layers[slot]);
+            backdrops_[slot] = decode_backdrop(image, backdrop_layers[slot]);
         } catch (const std::exception &) {
-            backdrops_[slot] = {}; // A plain flavour fill stands in.
+            // A plain flavour fill stands in.
         }
     }
     layout();
@@ -118,7 +130,7 @@ void SecondScreen::decode_font(std::span<const std::uint8_t> image, int index) {
     font.glyphs.assign(glyphs.begin(), glyphs.end());
 }
 
-void SecondScreen::decode_backdrop(std::span<const std::uint8_t> image, int slot, int layer) {
+SecondScreen::Backdrop SecondScreen::decode_backdrop(std::span<const std::uint8_t> image, int layer) const {
     const auto entry = slice(image, battle_layers + std::size_t(layer) * 17, 17);
     const int bpp = entry[2];
     if (bpp != 2 && bpp != 4) throw std::runtime_error("Unexpected battle background depth");
@@ -128,7 +140,7 @@ void SecondScreen::decode_backdrop(std::span<const std::uint8_t> image, int slot
         image, read_long(image, battle_arrangements + std::size_t(entry[0]) * 4) & 0x3fffff, 0x1000);
     if (arrangement.size() < 32 * 32 * 2) throw std::runtime_error("Short battle background arrangement");
     const auto palette = slice(image, read_long(image, battle_palettes + std::size_t(entry[1]) * 4) & 0x3fffff, 32);
-    auto &backdrop = backdrops_[slot];
+    Backdrop backdrop;
     for (int index = 0; index < 16; ++index)
         backdrop.palette[index] = argb(std::uint16_t(palette[index * 2] | palette[index * 2 + 1] << 8));
     backdrop.cycle_type = entry[3];
@@ -154,6 +166,7 @@ void SecondScreen::decode_backdrop(std::span<const std::uint8_t> image, int slot
                         std::uint8_t(value);
                 }
         }
+    return backdrop;
 }
 
 // ---- Game thread --------------------------------------------------------
@@ -183,13 +196,191 @@ void SecondScreen::publish_party(std::span<const std::uint8_t> ram) {
         member.max_hp = word(base + 10), member.max_pp = word(base + 12);
         member.hp = word(base + 69), member.pp = word(base + 75);
         member.unconscious = ram[base + 14] == 1;
+        // The title screen's attract mode runs with a blank record.
+        if (member.name.empty() || !member.max_hp) continue;
         party.push_back(std::move(member));
     }
     const std::int64_t cash = ram[money] | ram[money + 1] << 8 | ram[money + 2] << 16 | std::int64_t(ram[money + 3]) << 24;
+    // BTL_ENTRY_BG_TABLE gives each enemy group two layers; the first is the
+    // full-screen pattern. Decode it once per battle, outside the lock.
+    const bool battle = word(battle_mode) != 0;
+    int layer = -1;
+    if (battle && word(battle_group) < battle_group_count) {
+        const auto entry = slice(image_, battle_group_layers + std::size_t(word(battle_group)) * 4, 2);
+        layer = entry[0] | entry[1] << 8;
+        if (layer < 1 || layer >= battle_layer_count) layer = -1;
+    }
+    std::optional<Backdrop> decoded;
+    if (layer >= 0 && layer != battle_layer_) {
+        battle_layer_ = layer;
+        try {
+            decoded = decode_backdrop(image_, layer);
+        } catch (const std::exception &) {
+            decoded = Backdrop{};
+        }
+    }
     std::lock_guard lock(mutex_);
+    if (decoded) battle_backdrop_ = std::move(*decoded);
+    if (in_battle_ != (layer >= 0)) dirty_ = true;
+    in_battle_ = layer >= 0;
     party_ = std::move(party);
     money_ = cash;
     flavour_ = std::clamp(int(ram[text_flavour]) - 1, 0, flavour_count - 1);
+}
+
+std::uint16_t SecondScreen::drive_input(std::span<const std::uint8_t> ram) {
+    std::lock_guard lock(mutex_);
+    if (taps_.empty()) return 0;
+    auto &tap = taps_.front();
+    // Each press is held two frames, then released for the menu to respond.
+    if (tap.hold) {
+        --tap.hold;
+        return tap.held;
+    }
+    if (tap.rest) {
+        --tap.rest;
+        return 0;
+    }
+    const auto press = [&](std::uint16_t button, int rest) {
+        tap.held = button;
+        tap.hold = 1;
+        tap.rest = rest;
+        return button;
+    };
+    if (tap.confirming && tap.then) {
+        const auto button = std::exchange(tap.then, 0);
+        return press(button, 0);
+    }
+    if (tap.confirming || ++tap.frames > 240 || ram.size() < option_pool + option_size * option_count) {
+        taps_.pop_front();
+        return 0;
+    }
+    if (tap.window < 0) {
+        tap.confirming = true;
+        return press(button_b, 0);
+    }
+    const auto word = [&](std::size_t at) { return unsigned(ram[at] | ram[at + 1] << 8); };
+    const auto record = [&](unsigned id) -> std::optional<std::size_t> {
+        const unsigned slot = id < 53 ? word(open_window_table + id * 2) : 0xffff;
+        if (slot >= 8) return std::nullopt;
+        return window_stats + slot * window_size;
+    };
+    const auto target_record = record(unsigned(tap.window));
+    if (!target_record) {
+        taps_.pop_front();
+        return 0;
+    }
+    const unsigned focus = word(focus_window), first = word(*target_record + stat_first_option);
+    // While a menu waits for input, the text cursor sits just past the
+    // selected entry's arrow. Act only once it has held still.
+    const int column = int(word(*target_record + stat_text_x)) - 1, line = int(word(*target_record + stat_text_y));
+    if (column != tap.last_column || line != tap.last_line) tap.stable = 0;
+    else ++tap.stable;
+    tap.last_column = column, tap.last_line = line;
+    constexpr std::array<std::uint16_t, 4> directions{button_up, button_down, button_left, button_right};
+    const auto step = [&](int direction) {
+        // A press that left the cursor in place counts against its direction.
+        if (tap.direction >= 0 && column == tap.from_column && line == tap.from_line) ++tap.failures[tap.direction];
+        if (++tap.moves > 48 || tap.failures[direction] >= 2) {
+            taps_.pop_front();
+            return std::uint16_t(0);
+        }
+        tap.direction = direction;
+        tap.from_column = column, tap.from_line = line;
+        tap.stable = 0;
+        return press(directions[direction], 2);
+    };
+    // The naming keyboard steers its own cursor over a fixed grid of cells.
+    if (focus == naming_keyboard) {
+        if (tap.window != int(naming_keyboard)) {
+            taps_.pop_front();
+            return 0;
+        }
+        if (tap.stable < 1) return 0;
+        if (line != tap.line) {
+            // Crossing the tapped line means it holds no cells, like the gap
+            // above "Don't Care".
+            if (tap.direction == (line > tap.line ? 1 : 0)) {
+                taps_.pop_front();
+                return 0;
+            }
+            return step(line > tap.line ? 0 : 1);
+        }
+        // Settle on the rightmost cell at or before the tap: walk left past
+        // it, then probe right until a step overshoots, wraps or sticks.
+        if (tap.probing) {
+            if (column > tap.from_column && column <= tap.column) return step(3);
+            if (column != tap.from_column) {
+                tap.confirming = true;
+                tap.then = button_a;
+                return press(button_left, 4);
+            }
+        } else if (column > tap.column) {
+            return step(2);
+        } else {
+            tap.probing = true;
+            return step(3);
+        }
+        tap.confirming = true;
+        return press(button_a, 0);
+    }
+    // Text and prompts take A. Windows behind the focused menu do nothing,
+    // so a stray tap on a question's dialogue never answers it.
+    if (first >= option_count) {
+        if (focus != unsigned(tap.window) && record(focus) && word(*record(focus) + stat_first_option) < option_count) {
+            taps_.pop_front();
+            return 0;
+        }
+        tap.confirming = true;
+        return press(button_a, 0);
+    }
+    if (focus != unsigned(tap.window)) {
+        // A parent menu: back out of the focused one, then select as usual.
+        const auto focused = record(focus);
+        if (!focused || word(*focused + stat_first_option) >= option_count || tap.backs >= 3) return 0;
+        ++tap.backs;
+        tap.stable = 0;
+        return press(button_b, 8);
+    }
+    struct Option { int x{}, y{}; };
+    std::vector<Option> visible;
+    const unsigned page = word(*target_record + stat_page);
+    std::array<bool, option_count> seen{};
+    for (unsigned index = first; index < option_count && !seen[index];) {
+        seen[index] = true;
+        const std::size_t at = option_pool + index * option_size;
+        const unsigned option_page_number = word(at + option_page);
+        if (word(at + option_flags) && (option_page_number == 0 || option_page_number == page))
+            visible.push_back({int(word(at + option_x)), int(word(at + option_y))});
+        index = word(at + option_next);
+    }
+    // The tapped option spans from its cursor cell to the next one on its line.
+    const Option *target = nullptr;
+    for (const auto &option : visible)
+        if (option.y == tap.line && option.x <= tap.column && (!target || option.x > target->x)) target = &option;
+    if (!target) {
+        taps_.pop_front();
+        return 0;
+    }
+    const Option *current = nullptr;
+    for (const auto &option : visible)
+        if (option.x == column && option.y == line) current = &option;
+    if (!current || tap.stable < 1) return 0;
+    if (current->x == target->x && current->y == target->y) {
+        tap.confirming = true;
+        return press(button_a, 0);
+    }
+    const int dx = target->x - current->x, dy = target->y - current->y;
+    // Irregular layouts fall back to the other axis when one sticks.
+    for (const int direction : {dy ? (dy < 0 ? 0 : 1) : -1, dx ? (dx < 0 ? 2 : 3) : -1})
+        if (direction >= 0 && tap.failures[direction] < 2) return step(direction);
+    taps_.pop_front();
+    return 0;
+}
+
+void SecondScreen::cancel_input() {
+    std::lock_guard lock(mutex_);
+    taps_.clear();
 }
 
 bool SecondScreen::showing_windows() const {
@@ -237,6 +428,7 @@ void SecondScreen::select_tab(Tab tab) {
     std::lock_guard lock(mutex_);
     tab_ = tab;
     pressed_ = -1;
+    taps_.clear();
     layout();
     dirty_ = true;
 }
@@ -247,16 +439,37 @@ void SecondScreen::touch(int x, int y, int action) {
     for (const auto &button : buttons_)
         if (x >= button.x && x < button.x + button.w && y >= button.y && y < button.y + button.h) hit = button.id;
     const int before = pressed_;
-    if (action == 0)
+    if (action == 0) {
         pressed_ = hit;
-    else if (action == 1) {
+        touch_x_ = hit < 0 && tab_ == Tab::Game ? x : -1, touch_y_ = y;
+    } else if (action == 1) {
         if (hit != pressed_) pressed_ = -1;
+        // A drag is not a tap.
+        if (std::abs(x - touch_x_) > 12 || std::abs(y - touch_y_) > 12) touch_x_ = -1;
     } else {
         const int target = pressed_;
         pressed_ = -1;
         if (action == 2 && target >= 0 && target == hit) activate(target);
+        if (action == 2 && touch_x_ >= 0 && tab_ == Tab::Game) tap_game(touch_x_, touch_y_);
+        touch_x_ = -1;
     }
     if (pressed_ != before) dirty_ = true;
+}
+
+void SecondScreen::tap_game(int x, int y) {
+    if (windows_.empty()) return;
+    x -= area_x, y -= area_y;
+    Tap tap;
+    // Later windows are drawn over earlier ones.
+    for (auto window = windows_.rbegin(); window != windows_.rend(); ++window)
+        if (x >= window->left && x < window->right && y >= window->top && y < window->bottom) {
+            tap.window = int(window->id);
+            // Text starts inside the border, on lines two tiles high.
+            tap.column = (x - window->left - 8) / 8;
+            tap.line = (y - window->top - 8) / 16;
+            break;
+        }
+    if (taps_.size() < 16) taps_.push_back(tap);
 }
 
 void SecondScreen::activate(int id) {
@@ -264,6 +477,7 @@ void SecondScreen::activate(int id) {
     const auto now = std::chrono::steady_clock::now();
     if (id >= tab_button && id < tab_button + 3) {
         tab_ = Tab(id - tab_button);
+        taps_.clear();
     } else if (id == save_button) {
         commands_.push_back({Command::Kind::Save, {}, {}});
     } else if (id == load_button) {
@@ -418,14 +632,15 @@ void SecondScreen::draw_cursor(Canvas canvas, int x, int y) const {
 }
 
 void SecondScreen::draw_backdrop(Canvas canvas, double seconds) const {
-    const auto &backdrop = backdrops_[std::size_t(std::clamp(settings_.backdrop, 0, backdrop_count - 1))];
+    const auto &backdrop = in_battle_ && !battle_backdrop_.indices.empty()
+        ? battle_backdrop_ : backdrops_[std::size_t(std::clamp(settings_.backdrop, 0, backdrop_count - 1))];
     if (backdrop.indices.empty()) {
         std::fill(canvas.begin(), canvas.end(), shade(frame_color(3), 0.8f));
         return;
     }
     // Palette cycling as the battle background table describes it, at 60 Hz ticks.
     auto palette = backdrop.palette;
-    if (backdrop.cycle_speed && backdrop.cycle_type) {
+    if (backdrop.cycle_speed && backdrop.cycle_type && !settings_.reduce_flashing) {
         const long step = long(seconds * 60.0) / backdrop.cycle_speed;
         const auto rotate = [&](int begin, int end) {
             if (begin < 0 || end > 15 || begin >= end) return;
@@ -441,10 +656,13 @@ void SecondScreen::draw_backdrop(Canvas canvas, double seconds) const {
     }
     for (auto &color : palette) color = shade(color, 0.8f);
     const int scroll_x = int(seconds * 6.0), scroll_y = int(seconds * 4.0);
+    // A battle's layer ripples sideways, a calm echo of the fight's distortion.
+    const bool ripple = &backdrop == &battle_backdrop_;
     for (int y = 0; y < height; ++y) {
         const auto *row = &backdrop.indices[std::size_t((y + scroll_y) & 255) * 256];
         auto *out = &canvas[std::size_t(y) * width];
-        for (int x = 0; x < width; ++x) out[x] = palette[row[(x + scroll_x) & 255] & 15];
+        const int shift = scroll_x + (ripple ? int(std::lround(6.0 * std::sin(y / 12.0 + seconds * 2.0))) : 0);
+        for (int x = 0; x < width; ++x) out[x] = palette[row[(x + shift) & 255] & 15];
     }
 }
 
@@ -584,7 +802,11 @@ std::string SecondScreen::setting_value(int row) const {
     case 3: return on(settings_.interpolate_frames);
     case 4: return on(settings_.crt_filter);
     case 5: return on(settings_.reduce_flashing);
-    case 6: return std::to_string(settings_.backdrop + 1) + " of " + std::to_string(backdrop_count);
+    case 6: {
+        // A fight shows its own background; the choice returns afterwards.
+        auto value = std::to_string(settings_.backdrop + 1) + " of " + std::to_string(backdrop_count);
+        return in_battle_ && !battle_backdrop_.indices.empty() ? value + " after battle" : value;
+    }
     }
     return {};
 }

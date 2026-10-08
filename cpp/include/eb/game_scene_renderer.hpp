@@ -187,9 +187,13 @@ class GameSceneRenderer {
     unsigned presentation_ui_layer_ = 4;
     bool presentation_left_windows_{};
     bool presentation_track_windows_{}, presentation_hide_windows_{};
-    // True where a widescreen picture omits a window shown on another display.
+    // At native width the hidden-window picture is a copy, so the canonical
+    // framebuffer keeps its windows. Latched per frame at the first scanline.
+    std::vector<uint32_t> presentation_hidden_framebuffer_;
+    bool presentation_hidden_frame_{};
+    // True where the picture omits a window shown on another display.
     bool presentation_window_hidden(int x, unsigned y) const {
-        if (!presentation_hide_windows_ || presentation_width_ == 256) return false;
+        if (!presentation_hide_windows_) return false;
         for (unsigned index = 0; index < presentation_ui_window_count_; ++index)
             if (presentation_ui_windows_[index].contains(x, int(y))) return true;
         return false;

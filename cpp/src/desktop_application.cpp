@@ -4,6 +4,7 @@
 #include "eb/desktop_display.hpp"
 #include "eb/desktop_presentation.hpp"
 #include "eb/display_preferences.hpp"
+#include "eb/game_debug.hpp"
 #include "desktop_session.hpp"
 #include "eb/input_replay.hpp"
 #include "eb/launch_options.hpp"
@@ -289,6 +290,8 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
             const auto state = snapshots.load(id);
             session.load_snapshot(state);
             input.seek(session.frames());
+            // A tap's cursor walk belongs to the menu it was aimed at.
+            if (second_screen) second_screen->cancel_input();
             // Replace the old borrowed canvas before any
             // host reconfiguration can allocate or fail.
             presentation.restored_frame(session.presentation_frame(), std::chrono::steady_clock::now());
@@ -394,6 +397,11 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                         presentation.reset_native_deadline(std::chrono::steady_clock::now());
                     }
                 }
+                // GameDebug accepts requests only once a party is loaded.
+                if (options.debug_battle && !session.native() && session.debug().snapshot().ready) {
+                    session.debug().request({GameDebugRequest::Kind::Battle, options.debug_battle, {}});
+                    options.debug_battle = 0;
+                }
                 if (second_screen) {
                     apply_second_screen_commands();
                     // Windows are tracked only while a panel shows them, so a
@@ -411,8 +419,20 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                     present_and_wait();
                     continue;
                 }
-                const auto buttons =
+                auto buttons =
                     input.buttons_for_frame(session.frames(), options.replay_only ? 0 : physical_buttons);
+                if (second_screen_active) {
+                    for (const auto &tap : options.second_screen_taps)
+                        if (tap.frame == session.frames()) {
+                            second_screen->touch(tap.x, tap.y, 0);
+                            second_screen->touch(tap.x, tap.y, 2);
+                        }
+                    // The pad takes over from a tap still walking a cursor.
+                    if (buttons) second_screen->cancel_input();
+                    buttons |= second_screen->drive_input(session.work_ram());
+                } else if (second_screen) {
+                    second_screen->cancel_input();
+                }
                 const auto completed_frames = session.advance_frame(buttons, options.steps);
                 drain_audio();
                 presentation.simulation_finished(session.presentation_frame(), completed_frames,
@@ -422,7 +442,8 @@ int run_session(LaunchOptions options, std::optional<PendingGameSwitch> &next) {
                     const unsigned count = session.capture_windows(*window_pixels, rects);
                     std::vector<SecondScreen::Window> windows;
                     for (unsigned index = 0; index < count; ++index)
-                        windows.push_back({rects[index].left, rects[index].top, rects[index].right, rects[index].bottom});
+                        windows.push_back({rects[index].left, rects[index].top, rects[index].right, rects[index].bottom,
+                                           rects[index].id});
                     second_screen->publish_windows(*window_pixels, windows);
                     second_screen->publish_party(session.work_ram());
                 }
