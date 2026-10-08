@@ -42,6 +42,11 @@ void windows(eb::GameVersion version, unsigned width, unsigned id, bool filter) 
         for (unsigned row = y; row < y + h; ++row)
             for (unsigned col = x; col < x + w; ++col)
                 vram_word(*bus, 0xf800 + (row * 32 + col) * 2, 0x2001);
+        // Presentation follows a window once its border corners are uploaded.
+        vram_word(*bus, 0xf800 + (y * 32 + x) * 2, 0x2010);
+        vram_word(*bus, 0xf800 + (y * 32 + x + w - 1) * 2, 0x6010);
+        vram_word(*bus, 0xf800 + ((y + h - 1) * 32 + x) * 2, 0xa010);
+        vram_word(*bus, 0xf800 + ((y + h - 1) * 32 + x + w - 1) * 2, 0xe010);
     };
     record(0, id, 1, 1, menu_width, menu_height);
     record(1, 10, 1, 10, jp ? 9 : 8, 4);
@@ -53,7 +58,10 @@ void windows(eb::GameVersion version, unsigned width, unsigned id, bool filter) 
     bus->write_byte(0x2107 + layer, 0x7c);
     bus->write_byte(layer ? 0x210c : 0x210b, 6);
     bus->write_byte(0x212c, 1u << layer);
-    for (unsigned row = 0; row < 8; ++row) vram_word(*bus, 0xc010 + row * 2, 0xff00);
+    for (unsigned row = 0; row < 8; ++row) {
+        vram_word(*bus, 0xc010 + row * 2, 0xff00);
+        vram_word(*bus, 0xc100 + row * 2, 0xff00);
+    }
     bus->palette_ram[4] = 0xff; bus->palette_ram[5] = 0x7f;
     ram_word(*bus, eb::source_profile(version).wram_battle_mode_flag, battle);
     bus->set_presentation_width(width); bus->set_presentation_effects_enabled(filter);

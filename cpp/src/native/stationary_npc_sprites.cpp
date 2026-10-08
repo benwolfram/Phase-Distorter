@@ -80,6 +80,37 @@ void verify_stationary_programs(const ActionScriptData &scripts, GameVersion ver
     blink.byte(6); blink.byte(24); blink.call(0xc40015);
     blink.byte(0x0b); blink.word(animation_loop); blink.byte(0x19); blink.word(scripts.entry(35));
 }
+// Sleeping animals such as King run 606's pose loop at a slower pace and
+// without its direction child. Other content keeps them active-only.
+bool verify_sleeping_program(const ActionScriptData &scripts, GameVersion version) {
+    const bool jp = version == GameVersion::JP;
+    struct Expected {
+        const ActionScriptData &scripts;
+        unsigned at;
+        bool matches = true;
+        void byte(unsigned value) { matches = matches && scripts.byte(at++) == value; }
+        void word(unsigned value) { byte(value & 255); byte((value >> 8) & 255); }
+        void call(unsigned id) { byte(0x42); word(id); byte(id >> 16); }
+    };
+    try {
+        Expected sleeping{scripts, scripts.entry(627)};
+        sleeping.byte(0x25); sleeping.word(jp ? 0x9fcf : 0x9ff0);
+        sleeping.byte(0x3b); sleeping.byte(0); sleeping.byte(0x39);
+        sleeping.call(jp ? 0xc0c7bd : 0xc0c7db); sleeping.call(jp ? 0xc0a49e : 0xc0a4bf);
+        sleeping.byte(0x19);
+        const unsigned loop = (sleeping.at & 0xff0000) | scripts.byte(sleeping.at) |
+                              unsigned(scripts.byte(sleeping.at + 1)) << 8;
+        sleeping.word(loop);
+        Expected pose{scripts, loop};
+        pose.byte(6); pose.byte(24); pose.byte(0x3b); pose.byte(1);
+        pose.call(jp ? 0xc0a491 : 0xc0a4b2);
+        pose.byte(6); pose.byte(48); pose.call(0xc40015);
+        pose.byte(0x0b); pose.word(loop); pose.byte(0x19); pose.word(scripts.entry(35));
+        return sleeping.matches && pose.matches;
+    } catch (const std::out_of_range &) {
+        return false;
+    }
+}
 }
 struct StationaryNpcSprites::State {
     NpcCatalog npcs;
@@ -88,6 +119,7 @@ struct StationaryNpcSprites::State {
     std::shared_ptr<SpriteResources> sprites;
     NpcSpriteReadinessLimits resource_limits;
     std::vector<std::optional<NpcPlacement>> placements;
+    bool sleeping{};
     State(std::span<const std::uint8_t> assets, GameVersion version, std::shared_ptr<SpriteResources> resources,
           NpcSpriteReadinessLimits limits, bool restore_threed_npcs)
         : npcs(assets, npc_catalog_layout(version, restore_threed_npcs)), map(assets, world_map_layout(version)),
@@ -95,7 +127,9 @@ struct StationaryNpcSprites::State {
         if (!sprites) throw std::invalid_argument("Missing stationary NPC sprite resources");
         if (!limits.images || !limits.image_bytes)
             throw std::invalid_argument("NPC resource preparation requires positive limits");
-        verify_stationary_programs(*import_action_scripts(assets, version), version);
+        const auto scripts = import_action_scripts(assets, version);
+        verify_stationary_programs(*scripts, version);
+        sleeping = verify_sleeping_program(*scripts, version);
         placements.resize(npcs.size());
         for (unsigned y = 0; y < 40; ++y)
             for (unsigned x = 0; x < 32; ++x)
@@ -114,7 +148,9 @@ StationaryNpcSprites::StationaryNpcSprites(std::span<const std::uint8_t> assets,
 bool StationaryNpcSprites::supports(NpcId npc) const {
     if (npc >= state_->npcs.size()) return false;
     const auto &definition = state_->npcs.definition(npc);
-    return supports_stationary_npc_preview(definition.type, definition.script);
+    return supports_stationary_npc_preview(definition.type, definition.script) ||
+        (state_->sleeping && definition.script == 627 &&
+         (definition.type == NpcType::Person || definition.type == NpcType::Object));
 }
 bool StationaryNpcSprites::supports(NpcId npc, unsigned current_script) const {
     return supports(npc) && state_->npcs.definition(npc).script == current_script;

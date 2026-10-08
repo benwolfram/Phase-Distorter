@@ -184,16 +184,18 @@ std::shared_ptr<DirectSceneFrame> DirectSceneCapture::build(const SceneReadView 
                         ? int(x * 256 / frame->width) - int(view.background_scroll_x[bg])
                         : int(x) - (moved_window ? margin : 0);
                     if (moved_window) {
-                        const auto sample = renderer.presentation_window_sample_x(native_x, y);
+                        const auto sample = renderer.presentation_window_sample(native_x, y);
                         if (!sample) continue;
-                        native_x = *sample;
+                        native_x = sample->x;
+                        renderer.presentation_rebuilt_window_ = sample->rebuilt;
                     }
                     if (world && !inside(native_x))
                         continue;
                     const int native_y = world ? int(y) - int(padding) : int(y);
-                    const auto pixel =
-                        view.sample_background_pixel(bg, native_x + (world ? shift : 0),
-                                                     unsigned(native_y + 1), world ? &renderer : nullptr);
+                    const auto pixel = view.sample_background_pixel(
+                        bg, native_x + (world ? shift : 0), unsigned(native_y + 1),
+                        world || renderer.presentation_rebuilt_window_ >= 0 ? &renderer : nullptr);
+                    renderer.presentation_rebuilt_window_ = -1;
                     if (pixel.priority < 0)
                         continue;
                     auto [it, inserted] = planes.try_emplace(pixel.priority);

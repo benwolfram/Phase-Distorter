@@ -147,17 +147,37 @@ class GameSceneRenderer {
     struct UiWindow {
         int left{}, top{}, right{}, bottom{};
         bool left_edge{};
+        // WRAM window_stats record; its own tilemap rebuilds covered artwork.
+        unsigned record{};
+        bool paginated{};
+        // Tile rectangle on the window page, kept to follow scrolling.
+        unsigned id{}, slot{};
+        int column{}, row{}, columns{}, rows{};
         bool contains(int x, int y) const {
             return x >= left && x < right && y >= top && y < bottom;
         }
+    };
+    // Interior and title as of the last frame start, which matches the page
+    // uploaded at vblank and outlives CLOSE_WINDOW clearing the record.
+    struct WindowArt {
+        unsigned title{}, title_length{};
+        std::array<uint16_t, 30 * 30> tiles{};
+    };
+    struct WindowSample {
+        int x{};
+        int rebuilt = -1;
     };
     std::array<UiWindow, 8> presentation_ui_windows_{};
     unsigned presentation_ui_window_count_{};
     unsigned presentation_ui_layer_ = 4;
     bool presentation_left_windows_{};
+    // Set while sampling a moved window strip that a later window covers.
+    int presentation_rebuilt_window_ = -1;
+    std::array<WindowArt, 8> presentation_window_art_{};
     bool source_window_layer(const SceneReadView &view, unsigned layer) const;
-    void prepare_presentation_windows(const SceneReadView &view);
-    std::optional<int> presentation_window_sample_x(int x, unsigned y) const;
+    void prepare_presentation_windows(const SceneReadView &view, bool frame_start);
+    std::optional<WindowSample> presentation_window_sample(int x, unsigned y) const;
+    uint16_t presentation_window_tile(int x, unsigned y, uint16_t original) const;
     // Per-scanline reference policy. Palette entries retain the current scene's
     // coordinates; only known transient effect contributions are replaced.
     std::array<uint16_t, 256> presentation_reference_palette_{};

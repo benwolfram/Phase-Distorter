@@ -239,7 +239,9 @@ bool GameSceneRenderer::source_window_layer(const SceneReadView &view, unsigned 
         ((view.ppu_registers[0x0b + layer / 2] >> ((layer & 1) * 4)) & 15) == 6;
 }
 
-void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view) {
+void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view, bool frame_start) {
+    const auto shown = presentation_ui_windows_;
+    const unsigned shown_count = presentation_ui_window_count_;
     presentation_ui_window_count_ = 0;
     presentation_ui_layer_ = 4;
     presentation_left_windows_ = false;
@@ -256,7 +258,8 @@ void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view) 
     // its drawn border adds two tiles in each dimension.
     const bool jp = view.game_version == GameVersion::JP;
     const unsigned records = jp ? 0x89c2 : 0x8650, size = jp ? 76 : 82,
-                   table = jp ? 0x8c26 : 0x88e4, head = jp ? 0x8c22 : 0x88e0;
+                   table = jp ? 0x8c26 : 0x88e4, head = jp ? 0x8c22 : 0x88e0,
+                   pagination = jp ? 0x61f2 : 0x5e7a;
     const auto word = [&](unsigned at) { return unsigned(view.work_ram[at]) | unsigned(view.work_ram[at + 1]) << 8; };
     std::array<UiWindow, 8> windows{};
     unsigned count = 0, previous = 0xffff;
@@ -265,48 +268,165 @@ void GameSceneRenderer::prepare_presentation_windows(const SceneReadView &view) 
     const unsigned layer = presentation_ui_layer_;
     const int scroll_x = int((view.background_scroll_x[layer] + 512) & 1023) - 512,
               scroll_y = int((view.background_scroll_y[layer] + 512) & 1023) - 512;
+    // A list caught mid-edit counts as empty; drawn windows below persist.
+    bool valid = true;
     for (unsigned slot = word(head); slot != 0xffff;) {
-        if (slot >= 8 || seen[slot]) return;
+        if (slot >= 8 || seen[slot]) {
+            valid = false;
+            break;
+        }
         seen[slot] = true;
         const unsigned at = records + slot * size, id = word(at + 4), x = word(at + 6),
                        y = word(at + 8), w = word(at + 10) + 2, h = word(at + 12) + 2;
         if (id >= (jp ? 52u : 53u) || word(table + id * 2) != slot || word(at) != previous ||
-            x >= 32 || y >= 32 || w < 2 || h < 2 || w > 32 - x || h > 32 - y)
-            return;
+            x >= 32 || y >= 32 || w < 2 || h < 2 || w > 32 - x || h > 32 - y) {
+            valid = false;
+            break;
+        }
         // Gameplay windows authored at the left inset: command/cash, goods
         // actions, PSI category, status and the two battle command layouts.
         // Dialogue and startup/name-entry windows keep their own positions.
         const bool edge = x == 1 && (id == 0 || id == 3 || id == 4 || id == 8 ||
                                     id == 10 || id == 11 || id == 15 || id == 18);
-        windows[count++] = {int(x * 8) - scroll_x, int(y * 8) - scroll_y - 1,
-                            int((x + w) * 8) - scroll_x, int((y + h) * 8) - scroll_y - 1, edge};
-        moved |= edge;
+        // C107AF replaces the top border's right end with page arrows.
+        const bool paginated = word(pagination) == id && word(pagination + 2) != 0xffff;
+        windows[count++] = {0, 0, 0, 0, edge, at, paginated, id, slot, int(x), int(y), int(w), int(h)};
         previous = slot;
         slot = word(at + 2);
     }
-    if (word(head + 2) != previous) return;
-    presentation_ui_windows_ = windows;
-    presentation_ui_window_count_ = count;
+    if (!valid || word(head + 2) != previous)
+        count = 0;
+    for (unsigned index = 0; frame_start && index < count; ++index) {
+        const auto &window = windows[index];
+        auto &art = presentation_window_art_[window.slot];
+        art.title = view.work_ram[window.record + 0x3b];
+        art.title_length = 0;
+        while (art.title_length < 32 && view.work_ram[window.record + 0x3c + art.title_length])
+            ++art.title_length;
+        const unsigned tiles = unsigned((window.columns - 2) * (window.rows - 2)),
+                       tilemap = word(window.record + 0x35);
+        for (unsigned tile = 0; tile < tiles; ++tile)
+            art.tiles[tile] = uint16_t(word((tilemap + tile * 2) & 0xffff));
+    }
+    // WINDOW_STATS changes a frame or more before BG2_BUFFER reaches VRAM.
+    // Follow the uploaded page: opening windows wait for one of their corners
+    // to arrive, and closing ones stay grouped until all four are cleared.
+    // Nested windows often share a corner, which says nothing about either.
+    const unsigned page = (view.ppu_registers[7 + layer] & 0xfc) << 9;
+    const auto same = [](const UiWindow &a, const UiWindow &b) {
+        return a.record == b.record && a.id == b.id && a.column == b.column && a.row == b.row &&
+            a.columns == b.columns && a.rows == b.rows;
+    };
+    const auto has_corner = [](const UiWindow &window, int column, int row) {
+        return (column == window.column || column == window.column + window.columns - 1) &&
+            (row == window.row || row == window.row + window.rows - 1);
+    };
+    const auto drawn = [&](const UiWindow &window) {
+        const auto shared = [&](int column, int row) {
+            const auto other = [&](const UiWindow &candidate) {
+                return !same(candidate, window) && has_corner(candidate, column, row);
+            };
+            return std::any_of(windows.begin(), windows.begin() + count, other) ||
+                std::any_of(shown.begin(), shown.begin() + shown_count, other);
+        };
+        const auto corner = [&](int column, int row, unsigned flip) {
+            const unsigned entry = view.vram_word(page + unsigned(row * 32 + column) * 2);
+            return !shared(column, row) && (entry & 0xc000) == flip &&
+                ((entry & 0x3ff) == 0x10 || (entry & 0x3ff) == 0x13);
+        };
+        const int right = window.column + window.columns - 1, bottom = window.row + window.rows - 1;
+        return corner(window.column, window.row, 0) || corner(right, window.row, 0x4000) ||
+            corner(window.column, bottom, 0x8000) || corner(right, bottom, 0xc000);
+    };
+    std::array<UiWindow, 8> visible{};
+    unsigned visible_count = 0;
+    for (unsigned index = 0; index < shown_count; ++index) {
+        const auto open = std::find_if(windows.begin(), windows.begin() + count,
+                                       [&](const UiWindow &window) { return same(window, shown[index]); });
+        if (open != windows.begin() + count)
+            visible[visible_count++] = *open;
+        // A reused or resized record replaces whatever it drew before.
+        else if (std::none_of(windows.begin(), windows.begin() + count,
+                              [&](const UiWindow &window) { return window.record == shown[index].record; }) &&
+                 drawn(shown[index]))
+            visible[visible_count++] = shown[index];
+    }
+    for (unsigned index = 0; index < count && visible_count < visible.size(); ++index)
+        if (std::none_of(shown.begin(), shown.begin() + shown_count,
+                         [&](const UiWindow &window) { return same(window, windows[index]); }) &&
+            drawn(windows[index]))
+            visible[visible_count++] = windows[index];
+    for (unsigned index = 0; index < visible_count; ++index) {
+        auto &window = visible[index];
+        window.left = window.column * 8 - scroll_x;
+        window.top = window.row * 8 - scroll_y - 1;
+        window.right = (window.column + window.columns) * 8 - scroll_x;
+        window.bottom = (window.row + window.rows) * 8 - scroll_y - 1;
+        moved |= window.left_edge;
+    }
+    presentation_ui_windows_ = visible;
+    presentation_ui_window_count_ = visible_count;
     presentation_left_windows_ = moved;
 }
 
-std::optional<int> GameSceneRenderer::presentation_window_sample_x(int x, unsigned y) const {
-    const auto owner = [&](int sample_x) {
-        for (unsigned index = presentation_ui_window_count_; index > 0; --index)
+std::optional<GameSceneRenderer::WindowSample> GameSceneRenderer::presentation_window_sample(int x,
+                                                                                            unsigned y) const {
+    const auto owner = [&](int sample_x, unsigned above) {
+        for (unsigned index = above; index > 0; --index)
             if (presentation_ui_windows_[index - 1].contains(sample_x, int(y)))
                 return int(index - 1);
         return -1;
     };
-    const int current = owner(x), shifted_x = x + int(presentation_width_ - 256) / 2,
-              shifted = owner(shifted_x);
+    const auto left = [&](int index) { return index >= 0 && presentation_ui_windows_[index].left_edge; };
+    const int current = owner(x, presentation_ui_window_count_), shifted_x = x + int(presentation_width_ - 256) / 2,
+              shifted = owner(shifted_x, presentation_ui_window_count_);
     // The source page already contains the topmost window's visible artwork.
     // Move only artwork owned by a left window, never an overlapping dialogue.
-    if (shifted >= 0 && presentation_ui_windows_[shifted].left_edge &&
-        (current < 0 || presentation_ui_windows_[current].left_edge || shifted > current))
-        return shifted_x;
-    if (x < 0 || x >= 256 || (current >= 0 && presentation_ui_windows_[current].left_edge))
+    if (left(shifted) && (current < 0 || left(current) || shifted > current))
+        return WindowSample{shifted_x};
+    // A later window at the authored position covers part of a left window
+    // on the shared page. Moved apart, that strip comes from the left
+    // window's own record instead.
+    int covered = shifted;
+    while (covered >= 0 && !left(covered))
+        covered = owner(shifted_x, unsigned(covered));
+    if (covered >= 0 && (current < 0 || left(current) || covered > current))
+        return WindowSample{shifted_x, covered};
+    if (x < 0 || x >= 256 || left(current))
         return std::nullopt;
-    return x;
+    return WindowSample{x};
+}
+
+// Mirrors C107AF's frame and content layout for one window. Overlap corners
+// (x3 tiles) join neighbouring windows, which a moved window no longer meets.
+uint16_t GameSceneRenderer::presentation_window_tile(int x, unsigned y, uint16_t original) const {
+    const auto &window = presentation_ui_windows_[presentation_rebuilt_window_];
+    const auto &art = presentation_window_art_[window.slot];
+    const int column = (x - window.left) / 8, row = (int(y) - 1 - window.top) / 8,
+              last_column = (window.right - window.left) / 8 - 1, last_row = (window.bottom - window.top) / 8 - 1;
+    if (column < 0 || row < 0 || column > last_column || row > last_row)
+        return original;
+    if (row == last_row)
+        return column == 0 ? 0xbc10 : column == last_column ? 0xfc10 : 0xbc11;
+    if (row == 0) {
+        if (column == 0 || column == last_column)
+            return column ? 0x7c10 : 0x3c10;
+        if (window.paginated && column >= last_column - 4)
+            return original;
+        if (const unsigned title = art.title) {
+            const int tiles = int(art.title_length * 6 + 7) / 8;
+            if (column == 1)
+                return 0x3c16;
+            if (column <= tiles + 1)
+                return uint16_t(0x2000 + (title - 1) * 16 + 0x2e0 + unsigned(column - 2));
+            if (column == tiles + 2)
+                return 0x7c16;
+        }
+        return 0x3c11;
+    }
+    if (column == 0 || column == last_column)
+        return column ? 0x7c12 : 0x3c12;
+    return uint16_t(art.tiles[unsigned((row - 1) * (last_column - 1) + column - 1)] + 0x2000);
 }
 
 void GameSceneRenderer::prepare_presentation_objects(const SceneReadView &view) {
@@ -955,6 +1075,8 @@ uint16_t GameSceneRenderer::presentation_map_tile(const SceneReadView &view, int
 // mistaken for authored scenery without asking the game to load more cells.
 uint16_t GameSceneRenderer::presentation_tile(const SceneReadView &view, unsigned bg, int x, unsigned y,
                                               uint16_t original) const {
+    if (presentation_rebuilt_window_ >= 0 && bg == presentation_ui_layer_)
+        return presentation_window_tile(x, y, original);
     if (presentation_world_map_ && bg < 2 && (direct_world_tiles_ || x < 0 || x >= 256)) {
         const int wx = presentation_world_x_[bg] + x, wy = presentation_world_y_[bg] + int(y);
         const int tx = wx >= 0 ? wx / 8 : (wx - 7) / 8, ty = wy >= 0 ? wy / 8 : (wy - 7) / 8;
@@ -1205,7 +1327,7 @@ void GameSceneRenderer::begin_scanline(const SceneReadView &view, unsigned y) {
         view.ppu_registers[0x27] == view.work_ram[oval + y * 2 + 1];
     if (!y || presentation_width_ > 256)
         prepare_presentation_scene(view);
-    prepare_presentation_windows(view);
+    prepare_presentation_windows(view, !y);
     refresh_host_artwork(view);
     if (presentation_effects_enabled_)
         prepare_presentation_effects(view);

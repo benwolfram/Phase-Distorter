@@ -155,7 +155,7 @@ void run(const eb::GameAssets &assets) {
         require(ready.supports(NpcId(id)) ==
                     ((d.type == NpcType::ItemBox && d.script == 9) ||
                      ((d.type == NpcType::Person || d.type == NpcType::Object) &&
-                      (d.script == 7 || d.script == 8 || d.script == 605 || d.script == 606 || d.script == 693))),
+                      (d.script == 7 || d.script == 8 || d.script == 605 || d.script == 606 || d.script == 627 || d.script == 693))),
                 "Readiness admitted an unsupported authored program");
     }
     for (unsigned pattern : {0u,255u}) {
@@ -261,7 +261,7 @@ void run(const eb::GameAssets &assets) {
     std::cout << "PASS stationary NPC source proof " << assets.title << ": candidates=" << candidates
               << " exact_source_pixels=" << pixels << " source_ticks=" << oracle.ticks
               << " active_exclusions=" << exclusions
-              << "; fixed-position scripts7/8/9/605/606/693, Twoson benches350/351 and people304/311, no activation\n";
+              << "; fixed-position scripts7/8/9/605/606/627/693, Twoson benches350/351 and people304/311, no activation\n";
 }
 }
 int main(int argc, char **argv) {

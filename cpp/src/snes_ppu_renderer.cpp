@@ -67,7 +67,7 @@ PpuPixel SceneReadView::sample_background_pixel(unsigned background_layer, int x
     // Ordinary tiled modes share map, palette and priority across eight
     // neighboring pixels. Raster state is immutable for this borrowed view.
     // Offset-per-tile, mode 7 and mosaic retain the scalar sampler.
-    auto* row_cache = tile_rows && mode <= 1 &&
+    auto* row_cache = tile_rows && mode <= 1 && !(scene && scene->presentation_rebuilt_window_ >= 0) &&
         (!(ppu_registers[6] & (1 << background_layer)) || mosaic == 1)
         ? &tile_rows->layers[background_layer] : nullptr;
     const int raw_x = x + int(background_scroll_x[background_layer]);
@@ -403,13 +403,18 @@ GameSceneRenderer::CompositePixel GameSceneRenderer::compose_pixel(
             sample_x = source_x - scroll;
         }
         if (moved_window) {
-            const auto window_x = presentation_window_sample_x(x, y);
-            if (!window_x) continue;
-            sample_x = *window_x;
+            const auto window = presentation_window_sample(x, y);
+            if (!window) continue;
+            sample_x = window->x;
+            presentation_rebuilt_window_ = window->rebuilt;
         }
         const Pixel candidate = layer == 4 ? object
                                            : view.sample_background_pixel(layer, sample_x, y + 1,
-                                                                          margin && scenery ? this : nullptr);
+                                                                          (margin && scenery) ||
+                                                                                  presentation_rebuilt_window_ >= 0
+                                                                              ? this
+                                                                              : nullptr);
+        presentation_rebuilt_window_ = -1;
         if (candidate.priority < 0)
             continue;
         const bool masked = margin ? presentation_window_contains(view, layer, x, y)
